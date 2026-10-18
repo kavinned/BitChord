@@ -43,7 +43,11 @@ keystore.properties
 
 # AI agent configuration
 AGENTS.md
+GEMINI.md
 /output/
+.agents
+graphify-out/
+.graphifyignore
 
 # Built packages — release APKs/bundles are handed out, never committed
 *.apk
