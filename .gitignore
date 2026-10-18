@@ -50,6 +50,7 @@ GEMINI.md
 skills-lock.json
 graphify-out/
 .graphifyignore
+docs/superpowers/
 
 # Built packages — release APKs/bundles are handed out, never committed
 *.apk
