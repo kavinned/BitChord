@@ -45,7 +45,9 @@ keystore.properties
 AGENTS.md
 GEMINI.md
 /output/
-.agents
+.agents/
+.agent/
+skills-lock.json
 graphify-out/
 .graphifyignore
 
