@@ -297,6 +297,7 @@ fun SearchScreen(
                         currentSong = currentSong,
                         isPlaying = isPlaying,
                         onClick = onHistoryClick,
+                        onSongLongPress = onSongLongPress,
                         onRemove = onHistoryRemove,
                         onClear = onHistoryClear,
                         onSongSwipe = onSongSwipe,
@@ -769,6 +770,7 @@ private fun LazyListScope.recentSearches(
     currentSong: Song?,
     isPlaying: Boolean,
     onClick: (SearchHistoryEntity) -> Unit,
+    onSongLongPress: (Song) -> Unit,
     onRemove: (String) -> Unit,
     onClear: () -> Unit,
     onSongSwipe: (Song) -> Unit,
@@ -798,14 +800,18 @@ private fun LazyListScope.recentSearches(
         }
     }
     items(history, key = { "recent:${it.id}" }) { entity ->
-        val onSwipe = entity.toSong()?.let { song -> { onSongSwipe(song) } }
+        // A recent track gets the same menu and swipe as a result row, so it can
+        // be queued without interrupting what's playing. The ids an old build
+        // saved as raw queries ("q:…") have no track behind them.
+        val song = entity.toSong()
         RecentSearchEntityRow(
             entity = entity,
             isCurrent = entity.entityType == EntityType.TRACK && entity.id == currentSong?.videoId,
             isPlaying = isPlaying,
             onClick = { onClick(entity) },
+            onLongPress = song?.let { { onSongLongPress(it) } },
             onRemove = { onRemove(entity.id) },
-            onSwipeToQueue = onSwipe,
+            onSwipeToQueue = song?.let { { onSongSwipe(it) } },
         )
     }
 }
@@ -884,14 +890,17 @@ private fun LazyListScope.recentAddonSearches(
 
 /**
  * Spotify-style entity row: square thumbnail, bold title, subtitle with type,
- * and a removal button. Tapping navigates to the entity or plays it directly.
+ * and a removal button. Tapping navigates to the entity or plays it directly;
+ * holding a track opens its menu.
  */
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun RecentSearchEntityRow(
     entity: SearchHistoryEntity,
     isCurrent: Boolean,
     isPlaying: Boolean,
     onClick: () -> Unit,
+    onLongPress: (() -> Unit)?,
     onRemove: () -> Unit,
     onSwipeToQueue: (() -> Unit)? = null,
 ) {
@@ -903,7 +912,8 @@ private fun RecentSearchEntityRow(
             modifier = Modifier
                 .fillMaxWidth()
                 .background(MaterialTheme.colorScheme.background)
-                .clickable(onClick = onClick)
+                .longPressMenuClickable(onClick = onClick, onLongClick = onLongPress)
+                .contextClick(onLongPress)
                 .padding(start = PAGE_GUTTER, end = 8.dp, top = 6.dp, bottom = 6.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
