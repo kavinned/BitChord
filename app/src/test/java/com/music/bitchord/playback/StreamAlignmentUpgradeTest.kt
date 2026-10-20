@@ -92,4 +92,22 @@ class StreamAlignmentUpgradeTest {
         )
         assertEquals(12345L, seekPos)
     }
+
+    @Test
+    fun `standby sync lead converges to mean of observed seek latencies`() {
+        val latencies = mutableListOf<Long>()
+        var lead = 0L
+
+        // Attempt 1: drift observed = 280ms with lead 0 -> seek latency = 280ms
+        val drift1 = 280L
+        latencies += lead + drift1
+        lead = latencies.average().toLong()
+        assertEquals(280L, lead)
+
+        // Attempt 2: with lead=280ms, residual drift = +20ms -> seek latency = 300ms, average = 290ms
+        val drift2 = 20L
+        latencies += lead + drift2
+        lead = latencies.average().toLong()
+        assertEquals(290L, lead)
+    }
 }
