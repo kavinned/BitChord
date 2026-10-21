@@ -9,6 +9,7 @@ import com.music.bitchord.data.TrackLog
 import com.music.bitchord.data.model.Song
 import com.music.bitchord.playback.AudioCache
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.isActive
@@ -262,3 +263,14 @@ object StreamAudioAligner {
         return AudioCache.renditionDataSource(watch, pick)
     }
 }
+
+/**
+ * The alignment already computed, or 0L once [waitMs] passes.
+ *
+ * The measurement runs alongside the audition, so it is normally finished by
+ * the time the swap is ready. When it is not, landing unaligned beats stalling
+ * the player for the rest of the deadline; [job] keeps running either way and
+ * caches its answer for the next upgrade.
+ */
+internal suspend fun awaitAlignmentOrZero(job: Deferred<Long>?, waitMs: Long): Long =
+    if (job == null) 0L else withTimeoutOrNull(waitMs) { job.await() } ?: 0L

@@ -1,6 +1,8 @@
 package com.music.bitchord.playback.smart
 
 import android.net.Uri
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
@@ -158,6 +160,22 @@ class StreamAudioAlignerTest {
         // generation marker the cache URI carries.
         assertEquals(320L, StreamAudioAligner.getCachedOffsetMs(mediaId, "https://cdn/stream.flac"))
         assertNull(StreamAudioAligner.getCachedOffsetMs(mediaId, "bitchord://watch?v=abc&q=hifi-2"))
+    }
+
+    @Test
+    fun `a slow alignment does not hold the swap, and its job keeps running`() = runBlocking {
+        val never = CompletableDeferred<Long>()
+        val started = System.currentTimeMillis()
+        assertEquals(0L, awaitAlignmentOrZero(never, waitMs = 50L))
+        assertTrue("waited ${System.currentTimeMillis() - started}ms", System.currentTimeMillis() - started < 1000L)
+        assertTrue("the job must survive the wait so it can still cache", never.isActive)
+    }
+
+    @Test
+    fun `a finished alignment is returned as-is`() = runBlocking {
+        val done = CompletableDeferred(275L)
+        assertEquals(275L, awaitAlignmentOrZero(done, waitMs = 50L))
+        assertEquals(0L, awaitAlignmentOrZero(null, waitMs = 50L))
     }
 
     @Test

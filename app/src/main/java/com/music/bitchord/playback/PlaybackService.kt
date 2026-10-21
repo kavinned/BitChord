@@ -141,6 +141,7 @@ import com.music.bitchord.data.sources.TrackMatcher
 import com.music.bitchord.playback.smart.AutomixAnalysisSource
 import com.music.bitchord.playback.smart.StreamAudioAligner
 import com.music.bitchord.playback.smart.VersionAudioAligner
+import com.music.bitchord.playback.smart.awaitAlignmentOrZero
 import com.music.bitchord.widget.MediaWidget
 import com.music.bitchord.widget.MediaWidgetSnapshot
 import com.music.bitchord.wear.WearBridge
@@ -4890,7 +4891,7 @@ class PlaybackService : MediaLibraryService() {
             }
         }
 
-        val offsetMs = alignJob?.await() ?: 0L
+        val offsetMs = awaitAlignmentOrZero(alignJob, ALIGN_SWAP_WAIT_MS)
 
         withContext(Dispatchers.Main) {
             val now = swapPointFor(mediaId)
@@ -9111,6 +9112,9 @@ class PlaybackService : MediaLibraryService() {
 
         /** How often to recheck [CrossfadeController.isTransitioning] while an upgrade waits on one. */
         const val UPGRADE_CROSSFADE_POLL_MS = 250L
+
+        /** Longest the swap waits on a pre-computed alignment before landing unaligned. */
+        const val ALIGN_SWAP_WAIT_MS = 500L
 
         /**
          * Longest an upgrade waits on a crossfade before giving up and
