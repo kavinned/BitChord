@@ -9255,8 +9255,14 @@ class PlaybackService : MediaLibraryService() {
          * ordinary swap, minutes from any blend, is as immediate as it was.
          */
         const val UPGRADE_AFTER_CROSSFADE_MS = 5_000L
-        private const val SYNC_MAX_SEEKS = 5
-        private const val SYNC_TOLERANCE_MS = 20L
+        private const val SYNC_MAX_SEEKS = 8
+
+        /**
+         * Close enough to hand over. A residual this size is inaudible under
+         * the blend; 20 ms and up reads as a small skip on transients, which
+         * is what the extra seeks above are spent to avoid.
+         */
+        private const val SYNC_TOLERANCE_MS = 10L
 
         /** Length of the equal-power blend when the aligned deck takes over. */
         private const val SOURCE_SWAP_CROSSFADE_MS = 300L
