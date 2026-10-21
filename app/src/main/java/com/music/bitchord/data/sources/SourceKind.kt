@@ -76,7 +76,6 @@ enum class SourceKind(
         labels = listOf("FLAC", "Lossless", "Hi-Res"),
         needsServer = true,
         canServeLossless = true,
-        worthPrefetching = true,
         // Literal, not [USER_ADDED]: an enum entry is constructed before
         // its own companion exists.
         rank = 0,
