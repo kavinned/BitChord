@@ -399,6 +399,13 @@ object AppSettings {
     /** Analyzes audio waveform/envelope to align matching playback moment between versions. */
     val smartVersionAlignment = MutableStateFlow(true)
 
+    /** Analyzes audio waveforms when upgrading stream quality to eliminate beat skips. */
+    val smartSourceAlignment = MutableStateFlow(false)
+
+    /** [smartVersionAlignment] is the parent: source alignment may not run without it. */
+    val sourceAlignmentEnabled: Boolean
+        get() = smartVersionAlignment.value && smartSourceAlignment.value
+
     /** Drops haze blur (status bar, mini player, bottom fade, lyrics focus) for a solid-fill look. */
     val reduceDynamicBlur = MutableStateFlow(false)
 
@@ -871,6 +878,7 @@ object AppSettings {
         dontRepeatSuggestions.value = prefs.getBoolean(KEY_DONT_REPEAT_SUGGESTIONS, false)
         preferMusicOnly.value = prefs.getBoolean(KEY_PREFER_MUSIC_ONLY, false)
         smartVersionAlignment.value = prefs.getBoolean(KEY_SMART_VERSION_ALIGNMENT, true)
+        smartSourceAlignment.value = prefs.getBoolean(KEY_SMART_SOURCE_ALIGNMENT, false)
         reduceDynamicBlur.value = prefs.getBoolean(KEY_REDUCE_BLUR, false)
         roundMiniPlayerArtwork.value = prefs.getBoolean(KEY_ROUND_MINIPLAYER_ARTWORK, false)
         liquidGlass.value = prefs.getBoolean(KEY_LIQUID_GLASS, false)
@@ -1275,6 +1283,11 @@ object AppSettings {
     fun setSmartVersionAlignment(value: Boolean) {
         smartVersionAlignment.value = value
         prefs.edit().putBoolean(KEY_SMART_VERSION_ALIGNMENT, value).apply()
+    }
+
+    fun setSmartSourceAlignment(value: Boolean) {
+        smartSourceAlignment.value = value
+        prefs.edit().putBoolean(KEY_SMART_SOURCE_ALIGNMENT, value).apply()
     }
 
     fun setReduceDynamicBlur(value: Boolean) {
@@ -2039,6 +2052,7 @@ object AppSettings {
     private const val KEY_DONT_REPEAT_SUGGESTIONS = "dont_repeat_suggestions"
     private const val KEY_PREFER_MUSIC_ONLY = "prefer_music_only"
     private const val KEY_SMART_VERSION_ALIGNMENT = "smart_version_alignment"
+    private const val KEY_SMART_SOURCE_ALIGNMENT = "smart_source_alignment"
     private const val KEY_REDUCE_BLUR = "reduce_dynamic_blur"
     private const val KEY_ROUND_MINIPLAYER_ARTWORK = "round_miniplayer_artwork"
     private const val KEY_LIQUID_GLASS = "liquid_glass"
