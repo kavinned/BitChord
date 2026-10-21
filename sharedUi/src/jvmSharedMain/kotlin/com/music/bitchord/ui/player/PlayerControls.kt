@@ -385,9 +385,9 @@ internal fun SleeveNerdStats(song: Song, modifier: Modifier = Modifier) {
         modifier = modifier,
     ) {
         nerdStats?.alignmentOffsetMs?.let { offset ->
-            val residual = nerdStats?.alignmentResidualMs
+            val syncDrift = nerdStats?.syncDriftMs
             Text(
-                text = if (residual != null) "Aligned %+d ms (Δ%+d)".format(Locale.ROOT, offset, residual)
+                text = if (syncDrift != null) "Aligned %+d ms (Δ%+d)".format(Locale.ROOT, offset, syncDrift)
                 else "Aligned %+d ms".format(Locale.ROOT, offset),
                 style = nerdStyle,
                 color = Color.White.copy(alpha = 0.65f),
