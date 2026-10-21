@@ -247,6 +247,7 @@ fun SettingsScreen(
     val dontRepeatSuggestions by AppSettings.dontRepeatSuggestions.collectAsStateWithLifecycle()
     val preferMusicOnly by AppSettings.preferMusicOnly.collectAsStateWithLifecycle()
     val smartVersionAlignment by AppSettings.smartVersionAlignment.collectAsStateWithLifecycle()
+    val prefetchAddonSources by AppSettings.prefetchAddonSources.collectAsStateWithLifecycle()
     val filterNonMusicAudio by AppSettings.filterNonMusicAudio.collectAsStateWithLifecycle()
     val localMusicFolderUri by AppSettings.localMusicFolderUri.collectAsStateWithLifecycle()
     val highPerformanceMode by AppSettings.highPerformanceMode.collectAsStateWithLifecycle()
@@ -511,6 +512,25 @@ fun SettingsScreen(
                         )
                     },
                     onClick = { AppSettings.setDolbyAtmos(!dolbyAtmos) },
+                )
+            }
+            val prefetchAddonTitle = stringResource(R.string.prefetch_addon_sources)
+            row(prefetchAddonTitle, "addon", "prefetch", "lossless", "queue") {
+                SettingsRow(
+                    icon = Icons.Rounded.Extension,
+                    title = prefetchAddonTitle,
+                    subtitle = stringResource(R.string.prefetch_addon_sources_subtitle),
+                    trailing = {
+                        Switch(
+                            checked = prefetchAddonSources,
+                            onCheckedChange = AppSettings::setPrefetchAddonSources,
+                            colors = SwitchDefaults.colors(
+                                checkedTrackColor = MaterialTheme.colorScheme.primary,
+                                checkedBorderColor = MaterialTheme.colorScheme.primary,
+                            ),
+                        )
+                    },
+                    onClick = { AppSettings.setPrefetchAddonSources(!prefetchAddonSources) },
                 )
             }
         }
