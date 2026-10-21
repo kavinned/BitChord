@@ -296,6 +296,16 @@ object SourceResolver {
     }
 
     /**
+     * Whether [kind] may be resolved ahead of playback. Addon sources are only
+     * speculative when the listener has asked for that — see
+     * [AppSettings.prefetchAddonSources]; everything else that is quick goes
+     * without asking. Kept separate from the filter so the rule has one home.
+     */
+    internal fun canPrefetch(kind: SourceKind): Boolean =
+        kind.worthPrefetching &&
+            (kind != SourceKind.ADDON || AppSettings.prefetchAddonSources.value)
+
+    /**
      * The copy of [target] held by a source quick enough to ask about *before*
      * the track is played — or null when no such source is enabled, or none of
      * them has it.
@@ -324,7 +334,7 @@ object SourceResolver {
         if (target.title.isBlank() || target.isVideo) return null
         val active = SourceRegistry.activeForPlayback()
         val youtube = active.firstOrNull { it.kind == SourceKind.YOUTUBE } ?: return null
-        val quick = rankedAbove(youtube.configId, active).filter { it.kind.worthPrefetching }
+        val quick = rankedAbove(youtube.configId, active).filter { canPrefetch(it.kind) }
         if (quick.isEmpty()) return null
         val (source, stream) = bestAcross(quick, target, requestForNow()) ?: return null
         TrackLog.d(

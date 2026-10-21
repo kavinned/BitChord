@@ -270,6 +270,8 @@
     <string name="smart_version_alignment_subtitle">Analyze audio waveforms to match the exact corresponding playback moment</string>
     <string name="smart_source_alignment" translatable="false">Align upgraded audio sources</string>
     <string name="smart_source_alignment_subtitle" translatable="false">Analyze waveforms when upgrading stream quality to eliminate beat skips</string>
+    <string name="prefetch_addon_sources" translatable="false">Pre-resolve addon sources</string>
+    <string name="prefetch_addon_sources_subtitle" translatable="false">Resolve high-quality addon streams for upcoming queue tracks before playback starts</string>
     <string name="equalizer">Equalizer</string>
     <string name="equalizer_subtitle">Tone, seven bands and balance</string>
     <string name="equalizer_footer">Shapes the sound inside BitChord, before it reaches the system.</string>

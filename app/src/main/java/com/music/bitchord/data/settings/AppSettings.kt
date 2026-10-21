@@ -406,6 +406,9 @@ object AppSettings {
     val sourceAlignmentEnabled: Boolean
         get() = smartVersionAlignment.value && smartSourceAlignment.value
 
+    /** Pre-resolves and pins high-quality addon streams for upcoming queue tracks before playback starts. */
+    val prefetchAddonSources = MutableStateFlow(false)
+
     /** Drops haze blur (status bar, mini player, bottom fade, lyrics focus) for a solid-fill look. */
     val reduceDynamicBlur = MutableStateFlow(false)
 
@@ -879,6 +882,7 @@ object AppSettings {
         preferMusicOnly.value = prefs.getBoolean(KEY_PREFER_MUSIC_ONLY, false)
         smartVersionAlignment.value = prefs.getBoolean(KEY_SMART_VERSION_ALIGNMENT, true)
         smartSourceAlignment.value = prefs.getBoolean(KEY_SMART_SOURCE_ALIGNMENT, false)
+        prefetchAddonSources.value = prefs.getBoolean(KEY_PREFETCH_ADDON_SOURCES, false)
         reduceDynamicBlur.value = prefs.getBoolean(KEY_REDUCE_BLUR, false)
         roundMiniPlayerArtwork.value = prefs.getBoolean(KEY_ROUND_MINIPLAYER_ARTWORK, false)
         liquidGlass.value = prefs.getBoolean(KEY_LIQUID_GLASS, false)
@@ -1288,6 +1292,11 @@ object AppSettings {
     fun setSmartSourceAlignment(value: Boolean) {
         smartSourceAlignment.value = value
         prefs.edit().putBoolean(KEY_SMART_SOURCE_ALIGNMENT, value).apply()
+    }
+
+    fun setPrefetchAddonSources(value: Boolean) {
+        prefetchAddonSources.value = value
+        prefs.edit().putBoolean(KEY_PREFETCH_ADDON_SOURCES, value).apply()
     }
 
     fun setReduceDynamicBlur(value: Boolean) {
@@ -2053,6 +2062,7 @@ object AppSettings {
     private const val KEY_PREFER_MUSIC_ONLY = "prefer_music_only"
     private const val KEY_SMART_VERSION_ALIGNMENT = "smart_version_alignment"
     private const val KEY_SMART_SOURCE_ALIGNMENT = "smart_source_alignment"
+    private const val KEY_PREFETCH_ADDON_SOURCES = "prefetch_addon_sources"
     private const val KEY_REDUCE_BLUR = "reduce_dynamic_blur"
     private const val KEY_ROUND_MINIPLAYER_ARTWORK = "round_miniplayer_artwork"
     private const val KEY_LIQUID_GLASS = "liquid_glass"
