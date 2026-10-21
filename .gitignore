@@ -54,3 +54,7 @@ docs/superpowers/
 # Built packages — release APKs/bundles are handed out, never committed
 *.apk
 *.aab
+
+# Local agent tooling, never committed. No trailing slash: this path is a
+# symlink, and a "directory only" rule would not match it.
+.claude/skills
