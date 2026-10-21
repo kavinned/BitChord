@@ -4667,6 +4667,37 @@ class PlaybackService : MediaLibraryService() {
                 return false
             }
 
+            // A spare deck occasionally comes up without a seek map: the item
+            // reports itself unseekable, so every seek below is dropped and the
+            // deck can never be brought level. Preparing it a second time
+            // usually resolves the source; if it does not, leave the listener's
+            // audio alone rather than adopt a deck seconds behind.
+            if (!standbyPlayer.isCurrentMediaItemSeekable) {
+                TrackLog.w("BitChord", "standby deck came up unseekable; preparing it once more", about = mediaId)
+                configureStandby(
+                    standbyPlayer,
+                    activePlayer,
+                    newItems,
+                    currentIndex,
+                    StreamAudioAligner.seekPositionMs(activePlayer.currentPosition, offsetMs),
+                    mediaId,
+                )
+                val repreparedAt = SystemClock.elapsedRealtime() + 5_000L
+                while (coroutineContext.isActive &&
+                    standbyPlayer.playbackState != Player.STATE_READY &&
+                    SystemClock.elapsedRealtime() < repreparedAt
+                ) {
+                    delay(20)
+                }
+                if (standbyPlayer.playbackState != Player.STATE_READY ||
+                    !standbyPlayer.isCurrentMediaItemSeekable
+                ) {
+                    TrackLog.w("BitChord", "upgrade abandoned: standby deck is not seekable", about = mediaId)
+                    QualityUpgrade.shelve(mediaId, stream)
+                    return false
+                }
+            }
+
             val willPlay = wasPlaying && activePlayer.playWhenReady
             val targetPos = StreamAudioAligner.seekPositionMs(activePlayer.currentPosition, offsetMs)
             standbyPlayer.seekTo(currentIndex, targetPos)
