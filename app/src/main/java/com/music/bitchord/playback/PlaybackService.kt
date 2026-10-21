@@ -4560,6 +4560,15 @@ class PlaybackService : MediaLibraryService() {
         standby.prepare()
     }
 
+    /** Records the offset a swap applied, or clears it when alignment is off. */
+    private fun recordAlignment(enabled: Boolean, mediaId: String, offsetMs: Long, driftMs: Long?) {
+        if (enabled) {
+            NerdStats.recordAlignmentOffset(mediaId, offsetMs, driftMs)
+        } else {
+            NerdStats.clearAlignmentOffset(mediaId)
+        }
+    }
+
     /**
      * Replaces the playing track's audio with [stream], keeping the position.
      *
@@ -4610,11 +4619,7 @@ class PlaybackService : MediaLibraryService() {
             activePlayer.replaceMediaItem(currentIndex, upgradedItem)
             activePlayer.seekTo(currentIndex, targetSeekPos)
             activePlayer.prepare()
-            if (alignmentEnabled) {
-                NerdStats.recordAlignmentOffset(mediaId, offsetMs, null)
-            } else {
-                NerdStats.clearAlignmentOffset(mediaId)
-            }
+            recordAlignment(alignmentEnabled, mediaId, offsetMs, null)
             return true
         }
 
@@ -4753,11 +4758,7 @@ class PlaybackService : MediaLibraryService() {
                 isSameTrack = true,
             )
             adopted = true
-            if (alignmentEnabled) {
-                NerdStats.recordAlignmentOffset(mediaId, offsetMs + lead.leadMs, syncResidual)
-            } else {
-                NerdStats.clearAlignmentOffset(mediaId)
-            }
+            recordAlignment(alignmentEnabled, mediaId, offsetMs + lead.leadMs, syncResidual)
             return true
         } finally {
             if (!adopted) {
@@ -4992,7 +4993,7 @@ class PlaybackService : MediaLibraryService() {
                 .withResolvedStreamType(stream.url)
                 .build()
 
-            val targetSeekPos = (now.position + offsetMs).coerceAtLeast(0L)
+            val targetSeekPos = StreamAudioAligner.seekPositionMs(now.position, offsetMs)
             val swapped = swapToAlignedStream(now, upgradedItem, stream, offsetMs)
             if (!swapped) return@withContext
 
