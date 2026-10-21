@@ -4718,6 +4718,22 @@ class PlaybackService : MediaLibraryService() {
                     }
                     val drift = measureStandbyDriftMs(activePlayer, standbyPlayer, offsetMs) ?: break
                     syncResidual = drift
+                    // A deck that accepted the start position and then restarted from
+                    // zero ignores every later seek too, so the gap only grows. Chasing
+                    // it folds seconds into the lead and records that as "alignment";
+                    // leave the listener's current audio alone instead.
+                    if (abs(drift) > MAX_SYNC_DRIFT_MS) {
+                        TrackLog.w(
+                            "BitChord",
+                            "upgrade abandoned: standby deck is ${drift}ms behind and not seeking" +
+                                " (active=${activePlayer.currentPosition} standby=${standbyPlayer.currentPosition}" +
+                                " dur=${standbyPlayer.duration} seekable=${standbyPlayer.isCurrentMediaItemSeekable}" +
+                                " buffered=${standbyPlayer.bufferedPosition} uri=${standbyPlayer.currentMediaItem?.localConfiguration?.uri})",
+                            about = mediaId,
+                        )
+                        QualityUpgrade.shelve(mediaId, stream)
+                        return false
+                    }
                     TrackLog.d("BitChord", "upgrade standby sync #$attempt: standby behind by ${drift}ms (lead=${lead.leadMs}ms)", about = mediaId)
                     if (abs(drift) <= SYNC_TOLERANCE_MS || attempt == SYNC_MAX_SEEKS ||
                         SystemClock.elapsedRealtime() > syncDeadline
@@ -9161,6 +9177,13 @@ class PlaybackService : MediaLibraryService() {
         const val UPGRADE_AFTER_CROSSFADE_MS = 5_000L
         private const val SYNC_MAX_SEEKS = 5
         private const val SYNC_TOLERANCE_MS = 20L
+
+        /**
+         * A gap this wide is not a seek the lead can pay back: the standby deck
+         * is not following its seeks at all, and the swap is abandoned rather
+         * than left chasing it.
+         */
+        private const val MAX_SYNC_DRIFT_MS = 2_000L
 
         /**
          * How long a replacement gets to report a length before it is
