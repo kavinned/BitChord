@@ -4803,6 +4803,7 @@ class PlaybackService : MediaLibraryService() {
                     currentPosMs = at.position,
                     currentSong = song,
                     targetStreamUri = Uri.parse(upgradedUri),
+                    streamUrl = stream.url,
                 )
             }
         } else {

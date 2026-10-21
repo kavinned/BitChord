@@ -150,6 +150,17 @@ class StreamAudioAlignerTest {
     }
 
     @Test
+    fun `cache entries are keyed by stream url, so a repeat upgrade reuses the measurement`() {
+        val mediaId = "track_xyz"
+        StreamAudioAligner.putCachedOffsetMs(mediaId, "https://cdn/stream.flac", 320L)
+
+        // A second upgrade of the same track resolves the same stream URL, whatever
+        // generation marker the cache URI carries.
+        assertEquals(320L, StreamAudioAligner.getCachedOffsetMs(mediaId, "https://cdn/stream.flac"))
+        assertNull(StreamAudioAligner.getCachedOffsetMs(mediaId, "bitchord://watch?v=abc&q=hifi-2"))
+    }
+
+    @Test
     fun `high-resolution 2ms hop resolves sub-10ms offset (+23ms within 3ms)`() {
         assertEquals(2.0, StreamAudioAligner.HOP_MS, 0.001)
         assertEquals(10.0, StreamAudioAligner.WIN_MS, 0.001)

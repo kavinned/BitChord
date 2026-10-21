@@ -39,7 +39,7 @@ object StreamAudioAligner {
     const val SECONDARY_WINDOW_AFTER_SEC = 10.0
 
     // Cache computed offsets so repeat upgrades or seeks reuse the measurement instantly:
-    // (mediaId, streamKey) -> offsetMs
+    // (mediaId, streamUrl) -> offsetMs
     private val offsetCache = ConcurrentHashMap<Pair<String, String>, Long>()
 
     fun getCachedOffsetMs(mediaId: String, streamUrl: String): Long? =
@@ -144,6 +144,9 @@ object StreamAudioAligner {
     /**
      * Calculates or retrieves the time offset (in milliseconds) from [currentSong]
      * to [targetStreamUri]. Clamped to fallback 0L if analysis fails or times out.
+     *
+     * @param streamUrl The real stream URL; the cache is keyed by it, not by the
+     * generation-marked cache URI in [targetStreamUri].
      */
     suspend fun findStreamOffsetMs(
         context: Context?,
@@ -151,9 +154,9 @@ object StreamAudioAligner {
         currentPosMs: Long,
         currentSong: Song?,
         targetStreamUri: Uri,
+        streamUrl: String,
     ): Long = withTimeoutOrNull(TIMEOUT_MS) {
-        val streamKey = targetStreamUri.toString()
-        val cached = offsetCache[mediaId to streamKey]
+        val cached = offsetCache[mediaId to streamUrl]
         if (cached != null) return@withTimeoutOrNull cached
 
         withContext(Dispatchers.IO) {
@@ -214,7 +217,7 @@ object StreamAudioAligner {
                 )
 
                 if (isConfident(confidence)) {
-                    offsetCache[mediaId to streamKey] = offsetMs
+                    offsetCache[mediaId to streamUrl] = offsetMs
                     TrackLog.d(TAG, "Stream alignment for $mediaId: offset=${offsetMs}ms, confidence=$confidence")
                     return@withContext offsetMs
                 }
