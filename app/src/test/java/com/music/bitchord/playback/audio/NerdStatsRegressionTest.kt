@@ -33,13 +33,19 @@ class NerdStatsRegressionTest {
         NerdStats.forgetLastSession()
     }
 
-    private fun snapshot(mediaId: String?, mime: String = "audio/opus", kbps: Int? = 160) =
+    private fun snapshot(
+        mediaId: String?,
+        mime: String = "audio/opus",
+        kbps: Int? = 160,
+        alignmentOffsetMs: Long? = null,
+    ) =
         NerdStats.Snapshot(
             mimeType = mime,
             bitrateKbps = kbps,
             sampleRateHz = 48_000,
             channels = 2,
             mediaId = mediaId,
+            alignmentOffsetMs = alignmentOffsetMs,
         )
 
     // ── Publishing ───────────────────────────────────────────────────────────
@@ -199,5 +205,12 @@ class NerdStatsRegressionTest {
         NerdStats.clearAlignmentOffset("track_2")
         assertNull(NerdStats.getAlignmentOffset("track_2"))
         assertNull(NerdStats.getAlignmentResidual("track_2"))
+    }
+
+    @Test
+    fun `zero or absent alignment offset is not reported as aligned`() {
+        assertNull(snapshot("track_1").shownAlignmentOffsetMs)
+        assertNull(snapshot("track_1", alignmentOffsetMs = 0L).shownAlignmentOffsetMs)
+        assertEquals(-120L, snapshot("track_1", alignmentOffsetMs = -120L).shownAlignmentOffsetMs)
     }
 }

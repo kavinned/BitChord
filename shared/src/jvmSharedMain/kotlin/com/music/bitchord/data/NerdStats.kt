@@ -71,6 +71,10 @@ object NerdStats {
         /** How far off the two streams still measured just before the fade, in ms. */
         val alignmentResidualMs: Long? = null,
     ) {
+        /** The compensation worth showing, or null when there is none: 0 ms is "no compensation". */
+        val shownAlignmentOffsetMs: Long?
+            get() = alignmentOffsetMs?.takeIf { it != 0L }
+
         /**
          * Whether what arrived is measurably worse than what was promised.
          *
