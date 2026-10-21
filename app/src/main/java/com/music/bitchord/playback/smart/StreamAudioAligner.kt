@@ -26,15 +26,15 @@ object StreamAudioAligner {
 
     private const val TAG = "StreamAudioAligner"
 
-    const val HOP_MS = 2.0 // 500 fps high-precision envelope
-    const val WIN_MS = 10.0 // 10ms transient window
-    const val MIN_CONFIDENCE = 0.40 // Minimum normalized cross-correlation
-    const val TIMEOUT_MS = 3000L // 3.0s deadline for alignment analysis
-    const val ANALYSIS_WARM_BYTES = 1_500_000L // 1.5MB background pre-warm
-    const val PRIMARY_WINDOW_START_SEC = 0.0
-    const val PRIMARY_WINDOW_END_SEC = 15.0
-    const val SECONDARY_WINDOW_BEFORE_SEC = 5.0
-    const val SECONDARY_WINDOW_AFTER_SEC = 10.0
+    internal const val HOP_MS = 2.0 // 500 fps high-precision envelope
+    internal const val WIN_MS = 10.0 // 10ms transient window
+    internal const val MIN_CONFIDENCE = 0.40 // Minimum normalized cross-correlation
+    internal const val TIMEOUT_MS = 3000L // 3.0s deadline for alignment analysis
+    internal const val ANALYSIS_WARM_BYTES = 1_500_000L // 1.5MB background pre-warm
+    internal const val PRIMARY_WINDOW_START_SEC = 0.0
+    internal const val PRIMARY_WINDOW_END_SEC = 15.0
+    internal const val SECONDARY_WINDOW_BEFORE_SEC = 5.0
+    internal const val SECONDARY_WINDOW_AFTER_SEC = 10.0
 
     // Cache computed offsets so repeat upgrades or seeks reuse the measurement instantly:
     // (mediaId, streamUrl) -> offsetMs
@@ -51,22 +51,18 @@ object StreamAudioAligner {
         offsetCache.clear()
     }
 
-    /** Where the incoming deck must start so [offsetMs] of content compensation is applied. */
+    /** Where the incoming deck must start so the offset is applied as content compensation. */
     fun seekPositionMs(currentPositionMs: Long, offsetMs: Long): Long =
         (currentPositionMs + offsetMs).coerceAtLeast(0L)
 
     /**
-     * Resolves analysis window bounds based on opening availability and playback position.
+     * Resolves analysis window bounds around the playback position.
      */
-    fun resolveWindow(hasOpening: Boolean, currentPosMs: Long): Pair<Double, Double> {
-        return if (hasOpening) {
-            PRIMARY_WINDOW_START_SEC to PRIMARY_WINDOW_END_SEC
-        } else {
-            val curSec = currentPosMs / 1000.0
-            val start = max(0.0, curSec - SECONDARY_WINDOW_BEFORE_SEC)
-            val end = curSec + SECONDARY_WINDOW_AFTER_SEC
-            start to end
-        }
+    fun resolveWindow(currentPosMs: Long): Pair<Double, Double> {
+        val curSec = currentPosMs / 1000.0
+        val start = max(0.0, curSec - SECONDARY_WINDOW_BEFORE_SEC)
+        val end = curSec + SECONDARY_WINDOW_AFTER_SEC
+        return start to end
     }
 
     /**
@@ -166,7 +162,7 @@ object StreamAudioAligner {
                 if (sourceDecode == null || targetDecode == null ||
                     sourceDecode.first.samples.isEmpty() || targetDecode.first.samples.isEmpty()
                 ) {
-                    val (secStart, secEnd) = resolveWindow(hasOpening = false, currentPosMs = currentPosMs)
+                    val (secStart, secEnd) = resolveWindow(currentPosMs)
                     sourceDecode = AudioDecoder.decodeRegion(sourceDs, secStart, secEnd, abort = { !isActive })
                     targetDecode = AudioDecoder.decodeRegion(targetDs, secStart, secEnd, abort = { !isActive })
                 }
@@ -191,7 +187,7 @@ object StreamAudioAligner {
                 )
 
                 if (isConfident(confidence)) {
-                    offsetCache[mediaId to streamUrl] = offsetMs
+                    putCachedOffsetMs(mediaId, streamUrl, offsetMs)
                     TrackLog.d(TAG, "Stream alignment for $mediaId: offset=${offsetMs}ms, confidence=$confidence")
                     return@withContext offsetMs
                 }
