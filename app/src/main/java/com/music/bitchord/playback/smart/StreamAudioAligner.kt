@@ -8,7 +8,10 @@ import androidx.media3.common.util.UnstableApi
 import com.music.bitchord.data.TrackLog
 import com.music.bitchord.data.model.Song
 import com.music.bitchord.playback.AudioCache
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import java.util.concurrent.ConcurrentHashMap
@@ -135,6 +138,9 @@ object StreamAudioAligner {
         return Pair(totalOffsetMs, correlation.confidence)
     }
 
+    /** Whether the correlation was strong enough to trust, at the shared floor. */
+    internal fun isConfident(confidence: Double): Boolean = confidence >= MIN_CONFIDENCE
+
     /**
      * Calculates or retrieves the time offset (in milliseconds) from [currentSong]
      * to [targetStreamUri]. Clamped to fallback 0L if analysis fails or times out.
@@ -170,11 +176,13 @@ object StreamAudioAligner {
                     sourceDs,
                     PRIMARY_WINDOW_START_SEC,
                     PRIMARY_WINDOW_END_SEC,
+                    abort = { !isActive },
                 )
                 var targetDecode = AudioDecoder.decodeRegion(
                     targetDs,
                     PRIMARY_WINDOW_START_SEC,
                     PRIMARY_WINDOW_END_SEC,
+                    abort = { !isActive },
                 )
 
                 // Secondary: Fall back around current playback position if primary missing/evicted
@@ -182,13 +190,14 @@ object StreamAudioAligner {
                     sourceDecode.first.samples.isEmpty() || targetDecode.first.samples.isEmpty()
                 ) {
                     val (secStart, secEnd) = resolveWindow(hasOpening = false, currentPosMs = currentPosMs)
-                    sourceDecode = AudioDecoder.decodeRegion(sourceDs, secStart, secEnd)
-                    targetDecode = AudioDecoder.decodeRegion(targetDs, secStart, secEnd)
+                    sourceDecode = AudioDecoder.decodeRegion(sourceDs, secStart, secEnd, abort = { !isActive })
+                    targetDecode = AudioDecoder.decodeRegion(targetDs, secStart, secEnd, abort = { !isActive })
                 }
 
                 if (sourceDecode == null || targetDecode == null ||
                     sourceDecode.first.samples.isEmpty() || targetDecode.first.samples.isEmpty()
                 ) {
+                    ensureActive()
                     TrackLog.w(TAG, "PCM decoding failed for stream alignment on $mediaId: source=${sourceDecode?.first?.samples?.size} target=${targetDecode?.first?.samples?.size} (null = decoder/extractor failed, 0 = nothing cached in window)")
                     return@withContext 0L
                 }
@@ -204,7 +213,7 @@ object StreamAudioAligner {
                     startTgt,
                 )
 
-                if (confidence >= MIN_CONFIDENCE) {
+                if (isConfident(confidence)) {
                     offsetCache[mediaId to streamKey] = offsetMs
                     TrackLog.d(TAG, "Stream alignment for $mediaId: offset=${offsetMs}ms, confidence=$confidence")
                     return@withContext offsetMs
@@ -212,6 +221,8 @@ object StreamAudioAligner {
 
                 TrackLog.w(TAG, "Stream alignment confidence $confidence < $MIN_CONFIDENCE for $mediaId; fallback 0ms")
                 0L
+            } catch (e: CancellationException) {
+                throw e
             } catch (e: Exception) {
                 Log.w(TAG, "Stream audio alignment failed for $mediaId", e)
                 0L

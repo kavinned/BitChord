@@ -2,6 +2,7 @@ package com.music.bitchord.playback.smart
 
 import android.net.Uri
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Before
@@ -9,7 +10,6 @@ import org.junit.Test
 import kotlin.math.PI
 import kotlin.math.abs
 import kotlin.math.sin
-import kotlin.random.Random
 
 class StreamAudioAlignerTest {
 
@@ -116,25 +116,23 @@ class StreamAudioAlignerTest {
     }
 
     @Test
-    fun `low confidence correlation falls back to 0ms`() {
-        val random = Random(12345)
-        // Uncorrelated white noise signals
-        val source = FloatArray(1000) { random.nextFloat() * 2f - 1f }
-        val target = FloatArray(1000) { random.nextFloat() * 2f - 1f }
+    fun `confidence is trusted only at or above the floor`() {
+        assertTrue(StreamAudioAligner.isConfident(StreamAudioAligner.MIN_CONFIDENCE))
+        assertFalse(StreamAudioAligner.isConfident(0.39))
+    }
 
+    @Test
+    fun `empty signals report no offset and no confidence`() {
         val (offset, confidence) = StreamAudioAligner.computeOffsetFromSignals(
-            sourceSamples = source,
+            sourceSamples = FloatArray(0),
             sourceSampleRate = 44100.0,
             sourceStartSec = 0.0,
-            targetSamples = target,
+            targetSamples = FloatArray(0),
             targetSampleRate = 44100.0,
             targetStartSec = 0.0,
         )
-
-        if (confidence < 0.40) {
-            val finalOffset = if (confidence >= 0.40) offset else 0L
-            assertEquals(0L, finalOffset)
-        }
+        assertEquals(0L, offset)
+        assertEquals(0.0, confidence, 0.0)
     }
 
     @Test
