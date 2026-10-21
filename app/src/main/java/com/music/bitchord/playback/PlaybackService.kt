@@ -4745,6 +4745,7 @@ class PlaybackService : MediaLibraryService() {
             // itself rather than trusting one read, then re-seek it ahead by exactly
             // that. It is muted throughout, so none of this is audible.
             val lead = StandbySyncLead()
+            val recentDrifts = ArrayList<Long>()
             var syncResidual: Long? = null
             if (willPlay && alignmentEnabled) {
                 val syncDeadline = SystemClock.elapsedRealtime() + 8_000L
@@ -4761,7 +4762,18 @@ class PlaybackService : MediaLibraryService() {
                         return false
                     }
                     val drift = measureStandbyDriftMs(activePlayer, standbyPlayer, offsetMs) ?: break
-                    syncResidual = drift
+                    recentDrifts += drift
+                    if (recentDrifts.size > 3) recentDrifts.removeAt(0)
+                    // One reading is a coin toss: the live playhead moves in
+                    // ~275ms steps, so a single sample is tens of ms off. Once
+                    // there are three, decide on their median; before that the
+                    // raw reading is all there is to go on.
+                    val settled = if (recentDrifts.size >= 3) {
+                        recentDrifts.sorted()[1]
+                    } else {
+                        drift
+                    }
+                    syncResidual = settled
                     // A deck that accepted the start position and then restarted from
                     // zero ignores every later seek too, so the gap only grows. Chasing
                     // it folds seconds into the lead and records that as "alignment";
@@ -4778,14 +4790,17 @@ class PlaybackService : MediaLibraryService() {
                         QualityUpgrade.shelve(mediaId, stream)
                         return false
                     }
-                    TrackLog.d("BitChord", "upgrade standby sync #$attempt: standby behind by ${drift}ms (lead=${lead.leadMs}ms)", about = mediaId)
-                    if (abs(drift) <= SYNC_TOLERANCE_MS || attempt == SYNC_MAX_SEEKS ||
+                    TrackLog.d("BitChord", "upgrade standby sync #$attempt: standby behind by ${drift}ms (settled=${settled}ms lead=${lead.leadMs}ms)", about = mediaId)
+                    if (abs(settled) <= SYNC_TOLERANCE_MS || attempt == SYNC_MAX_SEEKS ||
                         SystemClock.elapsedRealtime() > syncDeadline
                     ) {
                         break
                     }
+                    // The lead estimates what a seek costs, so it must see the
+                    // measurements themselves — feeding it a smoothed value
+                    // compounds the correction instead of absorbing it.
                     val currentLead = lead.observe(drift)
-                    standbyPlayer.seekTo(currentIndex, (standbyPlayer.currentPosition + drift + currentLead).coerceAtLeast(0L))
+                    standbyPlayer.seekTo(currentIndex, (standbyPlayer.currentPosition + settled + currentLead).coerceAtLeast(0L))
                 }
             }
 
