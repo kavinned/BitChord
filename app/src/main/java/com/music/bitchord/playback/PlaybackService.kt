@@ -2084,7 +2084,7 @@ class PlaybackService : MediaLibraryService() {
                     (activePlayer.isPlaying || activePlayer.playbackState == Player.STATE_READY)
 
                 if (!canCrossfade || standbyPlayer == null) {
-                    val pos = (activePlayer.currentPosition + alignmentOffsetMs).coerceAtLeast(0L)
+                    val pos = StreamAudioAligner.seekPositionMs(activePlayer.currentPosition, alignmentOffsetMs)
                     val wasPlaying = activePlayer.playWhenReady
                     activePlayer.replaceMediaItem(currentIndex, targetMediaItem)
                     activePlayer.seekTo(currentIndex, pos)
@@ -2100,7 +2100,7 @@ class PlaybackService : MediaLibraryService() {
                     if (i == currentIndex) targetMediaItem else activePlayer.getMediaItemAt(i)
                 }
                 val wasPlaying = activePlayer.playWhenReady
-                val alignedStartPos = (activePlayer.currentPosition + alignmentOffsetMs).coerceAtLeast(0L)
+                val alignedStartPos = StreamAudioAligner.seekPositionMs(activePlayer.currentPosition, alignmentOffsetMs)
 
             // Reset and configure standby player
             standbyPlayer.stop()
@@ -2149,7 +2149,7 @@ class PlaybackService : MediaLibraryService() {
                 standbyPlayer.clearMediaItems()
                 standbyPlayer.volume = 1f
                 swappingMediaId = null
-                val pos = (activePlayer.currentPosition + alignmentOffsetMs).coerceAtLeast(0L)
+                val pos = StreamAudioAligner.seekPositionMs(activePlayer.currentPosition, alignmentOffsetMs)
                 activePlayer.replaceMediaItem(currentIndex, targetMediaItem)
                 activePlayer.seekTo(currentIndex, pos)
                 if (wasPlaying) activePlayer.play()
@@ -2166,7 +2166,7 @@ class PlaybackService : MediaLibraryService() {
 
             // Sync playback position with exact live position right before starting playback on standby
             val livePos = activePlayer.currentPosition
-            val targetLivePos = (livePos + alignmentOffsetMs).coerceAtLeast(0L)
+            val targetLivePos = StreamAudioAligner.seekPositionMs(livePos, alignmentOffsetMs)
             standbyPlayer.seekTo(currentIndex, targetLivePos)
 
             val willPlay = wasPlaying && activePlayer.playWhenReady
@@ -2190,7 +2190,7 @@ class PlaybackService : MediaLibraryService() {
                     // resume time, which is the one part that cannot go.
                     standbyPlayer.seekTo(
                         currentIndex,
-                        (activePlayer.currentPosition + alignmentOffsetMs).coerceAtLeast(0L),
+                        StreamAudioAligner.seekPositionMs(activePlayer.currentPosition, alignmentOffsetMs),
                     )
                     val resyncTimeout = SystemClock.elapsedRealtime() + 300L
                     while (isActive && standbyPlayer.playbackState != Player.STATE_READY && SystemClock.elapsedRealtime() < resyncTimeout) {
@@ -4555,7 +4555,7 @@ class PlaybackService : MediaLibraryService() {
         if (currentIndex !in 0 until activePlayer.mediaItemCount) return false
         if (activePlayer.currentMediaItem?.mediaId != mediaId) return false
 
-        val alignmentEnabled = AppSettings.smartSourceAlignment.value && AppSettings.smartVersionAlignment.value
+        val alignmentEnabled = AppSettings.sourceAlignmentEnabled
         val standbyPlayer = spare
         val canUseStandby = standbyPlayer != null &&
             alignmentEnabled &&
@@ -4566,7 +4566,7 @@ class PlaybackService : MediaLibraryService() {
         if (!canUseStandby || standbyPlayer == null) {
             swappingMediaId = mediaId
             swapCutAt = SystemClock.elapsedRealtime()
-            val targetSeekPos = (activePlayer.currentPosition + offsetMs).coerceAtLeast(0L)
+            val targetSeekPos = StreamAudioAligner.seekPositionMs(activePlayer.currentPosition, offsetMs)
             if (offsetMs != 0L) {
                 TrackLog.d("BitChord", "waveform alignment applied: offset=${offsetMs}ms, seeking to ${targetSeekPos}ms (raw=${activePlayer.currentPosition}ms)", about = mediaId)
             }
@@ -4588,7 +4588,7 @@ class PlaybackService : MediaLibraryService() {
                 if (i == currentIndex) upgradedItem else activePlayer.getMediaItemAt(i)
             }
             val wasPlaying = activePlayer.playWhenReady
-            val livePos = (activePlayer.currentPosition + offsetMs).coerceAtLeast(0L)
+            val livePos = StreamAudioAligner.seekPositionMs(activePlayer.currentPosition, offsetMs)
             if (offsetMs != 0L) {
                 TrackLog.d("BitChord", "waveform alignment applied on standby deck: offset=${offsetMs}ms, starting standby at ${livePos}ms (raw=${activePlayer.currentPosition}ms)", about = mediaId)
             }
@@ -4636,7 +4636,7 @@ class PlaybackService : MediaLibraryService() {
             }
 
             val willPlay = wasPlaying && activePlayer.playWhenReady
-            val targetPos = (activePlayer.currentPosition + offsetMs).coerceAtLeast(0L)
+            val targetPos = StreamAudioAligner.seekPositionMs(activePlayer.currentPosition, offsetMs)
             standbyPlayer.seekTo(currentIndex, targetPos)
 
             if (willPlay) {
@@ -4646,7 +4646,7 @@ class PlaybackService : MediaLibraryService() {
                     delay(10)
                 }
                 if (standbyPlayer.isPlaying) {
-                    standbyPlayer.seekTo(currentIndex, (activePlayer.currentPosition + offsetMs).coerceAtLeast(0L))
+                    standbyPlayer.seekTo(currentIndex, StreamAudioAligner.seekPositionMs(activePlayer.currentPosition, offsetMs))
                     val resyncTimeout = SystemClock.elapsedRealtime() + 300L
                     while (coroutineContext.isActive && standbyPlayer.playbackState != Player.STATE_READY && SystemClock.elapsedRealtime() < resyncTimeout) {
                         delay(10)
@@ -4794,7 +4794,7 @@ class PlaybackService : MediaLibraryService() {
         // reaches its bytes through the same resolving data source the real one
         // does, and that is where a marked URI is turned back into a stream.
         QualityUpgrade.force(mediaId, stream)
-        val alignJob: Deferred<Long>? = if (AppSettings.smartSourceAlignment.value && AppSettings.smartVersionAlignment.value) {
+        val alignJob: Deferred<Long>? = if (AppSettings.sourceAlignmentEnabled) {
             val song = at.item.toSong()
             scope.async(Dispatchers.IO) {
                 StreamAudioAligner.findStreamOffsetMs(

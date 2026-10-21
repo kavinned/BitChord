@@ -50,6 +50,10 @@ object StreamAudioAligner {
         offsetCache.clear()
     }
 
+    /** Where the incoming deck must start so [offsetMs] of content compensation is applied. */
+    fun seekPositionMs(currentPositionMs: Long, offsetMs: Long): Long =
+        (currentPositionMs + offsetMs).coerceAtLeast(0L)
+
     /**
      * Resolves analysis window bounds based on opening availability and playback position.
      */
