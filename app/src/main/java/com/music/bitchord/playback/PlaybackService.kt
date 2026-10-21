@@ -249,6 +249,30 @@ internal class ManualUpgradeThrottle(private val cooldownMs: Long) {
 
 
 /**
+ * The per-swap estimate of what a near-seek costs the standby deck.
+ *
+ * One sample is noisy, so the lead is the mean of every correction seen so far.
+ * The first drift measurement only establishes the baseline.
+ */
+internal class StandbySyncLead {
+    private val latencies = ArrayList<Long>()
+    private var seen = 0
+
+    var leadMs = 0L
+        private set
+
+    fun observe(driftMs: Long): Long {
+        seen++
+        if (seen > 1) {
+            latencies += leadMs + driftMs
+            leadMs = latencies.average().toLong()
+        }
+        return leadMs
+    }
+}
+
+
+/**
  * Session command marking the span of a queue drag in the UI — see
  * [PartySync.beginQueueDrag]. Dragging a queue row sends a [Player.moveMediaItem]
  * per neighbour it crosses, same as before; what this brackets is only the
@@ -4674,12 +4698,10 @@ class PlaybackService : MediaLibraryService() {
             // time the live deck keeps playing through. Measure the gap on the audio
             // itself rather than trusting one read, then re-seek it ahead by exactly
             // that. It is muted throughout, so none of this is audible.
-            var syncLead = 0L
+            val lead = StandbySyncLead()
             var syncResidual: Long? = null
             if (willPlay && alignmentEnabled) {
                 val syncDeadline = SystemClock.elapsedRealtime() + 8_000L
-                var lead = 0L
-                val latencies = ArrayList<Long>()
                 for (attempt in 0..SYNC_MAX_SEEKS) {
                     if (player !== activePlayer ||
                         activePlayer.currentMediaItemIndex != currentIndex ||
@@ -4694,20 +4716,14 @@ class PlaybackService : MediaLibraryService() {
                     }
                     val drift = measureStandbyDriftMs(activePlayer, standbyPlayer, offsetMs) ?: break
                     syncResidual = drift
-                    syncLead = lead
-                    TrackLog.d("BitChord", "upgrade standby sync #$attempt: standby behind by ${drift}ms (lead=${lead}ms)", about = mediaId)
+                    TrackLog.d("BitChord", "upgrade standby sync #$attempt: standby behind by ${drift}ms (lead=${lead.leadMs}ms)", about = mediaId)
                     if (abs(drift) <= SYNC_TOLERANCE_MS || attempt == SYNC_MAX_SEEKS ||
                         SystemClock.elapsedRealtime() > syncDeadline
                     ) {
                         break
                     }
-                    // What the last seek cost, as seen from where it landed. One sample is
-                    // noisy (+-50ms), so the lead is the mean of every one seen so far.
-                    if (attempt > 0) {
-                        latencies += lead + drift
-                        lead = latencies.average().toLong()
-                    }
-                    standbyPlayer.seekTo(currentIndex, (standbyPlayer.currentPosition + drift + lead).coerceAtLeast(0L))
+                    val currentLead = lead.observe(drift)
+                    standbyPlayer.seekTo(currentIndex, (standbyPlayer.currentPosition + drift + currentLead).coerceAtLeast(0L))
                 }
             }
 
@@ -4720,7 +4736,7 @@ class PlaybackService : MediaLibraryService() {
             )
             adopted = true
             if (alignmentEnabled) {
-                NerdStats.recordAlignmentOffset(mediaId, offsetMs + syncLead, syncResidual)
+                NerdStats.recordAlignmentOffset(mediaId, offsetMs + lead.leadMs, syncResidual)
             } else {
                 NerdStats.clearAlignmentOffset(mediaId)
             }

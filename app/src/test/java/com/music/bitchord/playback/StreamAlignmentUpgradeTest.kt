@@ -2,6 +2,7 @@ package com.music.bitchord.playback
 
 import com.music.bitchord.playback.smart.StreamAudioAligner
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class StreamAlignmentUpgradeTest {
@@ -45,20 +46,17 @@ class StreamAlignmentUpgradeTest {
     }
 
     @Test
-    fun `standby sync lead converges to mean of observed seek latencies`() {
-        val latencies = mutableListOf<Long>()
-        var lead = 0L
+    fun `standby sync lead converges to the mean of observed seek latencies`() {
+        val lead = StandbySyncLead()
 
-        // Attempt 1: drift observed = 280ms with lead 0 -> seek latency = 280ms
-        val drift1 = 280L
-        latencies += lead + drift1
-        lead = latencies.average().toLong()
-        assertEquals(280L, lead)
+        // The first measurement only establishes the baseline; nothing is seeked on it yet.
+        assertEquals(0L, lead.observe(280L))
 
-        // Attempt 2: with lead=280ms, residual drift = +20ms -> seek latency = 300ms, average = 290ms
-        val drift2 = 20L
-        latencies += lead + drift2
-        lead = latencies.average().toLong()
-        assertEquals(290L, lead)
+        // That seek cost 0 + 20ms; one sample.
+        assertEquals(20L, lead.observe(20L))
+        assertTrue(lead.leadMs == 20L)
+
+        // Next seek overshot by 40ms: samples are 20 and -20, mean 0.
+        assertEquals(0L, lead.observe(-40L))
     }
 }
