@@ -314,7 +314,12 @@ object SourceResolver {
         for (source in sources) {
             val stream = lookup(source) ?: continue
             val kbps = stream.format.kbps ?: 0
-            if (stream.format.isLossless == true || kbps >= PREFETCH_LOSSY_STOP_KBPS) {
+            // Only a stated, genuinely delivered 320 ends the search. An
+            // inferred tier is the source guessing, and a below-request answer
+            // is the source admitting it could not do what was asked; neither
+            // should stop a lower-ranked source from holding the FLAC.
+            val statedTier = !stream.format.kbpsInferred && !stream.belowRequest
+            if (stream.format.isLossless == true || (statedTier && kbps >= PREFETCH_LOSSY_STOP_KBPS)) {
                 return source to stream
             }
             if (bestLossy == null || kbps > (bestLossy.second.format.kbps ?: 0)) {
