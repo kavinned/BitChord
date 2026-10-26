@@ -6115,6 +6115,37 @@ class PlaybackService : MediaLibraryService() {
     }
 
     /**
+     * Records what read-ahead has ready for the next queued track.
+     *
+     * The cache index read takes the cache's lock, which a loader may hold, so
+     * it runs off the main thread.
+     */
+    private suspend fun publishNextPrefetch(player: ExoPlayer) {
+        val index = player.nextMediaItemIndex
+        val item = index.takeIf { it != C.INDEX_UNSET && it in 0 until player.mediaItemCount }
+            ?.let { player.getMediaItemAt(it) }
+        if (item == null || item.mediaId.isBlank()) {
+            NerdStats.publishNextPrefetch(null)
+            return
+        }
+        val mediaId = item.mediaId
+        val song = item.toSong()
+        val pin = StreamChoice.of(mediaId)
+        val (cachedBytes, totalBytes) = withContext(Dispatchers.IO) {
+            val uri = Uri.parse("bitchord://watch?v=$mediaId")
+            AudioCache.cachedPrefixBytes(uri) to AudioCache.contentLengthOf(uri)
+        }
+        NerdStats.publishNextPrefetch(NerdStats.NextPrefetch(
+            mediaId = mediaId,
+            title = song.title,
+            sourceName = pin?.sourceConfigId?.let { SourceRegistry.config(it)?.displayName },
+            format = pin?.format?.takeIf { it != StreamFormat() }?.summary,
+            cachedBytes = cachedBytes,
+            totalBytes = totalBytes,
+        ))
+    }
+
+    /**
      * The playing stream's real bitrate: its full size over its length, or
      * null until both are known.
      *
@@ -6527,6 +6558,7 @@ class PlaybackService : MediaLibraryService() {
                     // The renderer can settle on its format a moment after the
                     // track change, which no callback of ours follows up on.
                     publishNerdStats()
+                    publishNextPrefetch(player)
                     // The backstop for the second look. The callbacks that
                     // start it fire at moments a track may not be resolved
                     // yet — the resolve happens on the loader thread when the
