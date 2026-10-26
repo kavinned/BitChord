@@ -436,6 +436,18 @@ object AudioCache {
         if (spec.uri.getQueryParameter(WATCH_READ_PARAM) != null) "$key#watch" else key
     }
 
+    /** The entry one recording's rendition is read from and written to. */
+    internal fun videoCacheKey(
+        videoId: String,
+        rendition: String?,
+        substituting: Boolean,
+        atmosSuffix: String = atmosKeySuffix(),
+    ): String = when {
+        rendition != null -> "$videoId#$rendition"
+        substituting -> "$videoId#alt$atmosSuffix"
+        else -> videoId
+    }
+
     private fun phoneKey(spec: androidx.media3.datasource.DataSpec): String =
         spec.uri.getQueryParameter("v")
             // A YouTube id can name several different recordings on disk: the
@@ -462,12 +474,8 @@ object AudioCache {
             // still held.
             ?.let { videoId ->
                 val rendition = QualityUpgrade.cacheTag(spec.uri)
-                when {
-                    rendition != null -> "$videoId#$rendition"
-                    SourceResolver.canSubstituteForYouTube() ->
-                        "$videoId#alt${atmosKeySuffix()}".let { completeSibling(videoId, it) ?: it }
-                    else -> completeSibling(videoId, videoId) ?: videoId
-                }
+                val key = videoCacheKey(videoId, rendition, SourceResolver.canSubstituteForYouTube())
+                if (rendition != null) key else completeSibling(videoId, key) ?: key
             }
             // A source-backed track keys on the source and its track id alone.
             // The full URI would work but carries the title and artist used
@@ -1403,24 +1411,30 @@ object AudioCache {
 
     /** @return true once every range of [videoId] is on disk. */
     private suspend fun cacheWholeOnce(videoId: String): Boolean {
-        val total = runCatching { StreamResolver.contentLength(videoId) }.getOrNull()
+        val uri = Uri.parse("bitchord://watch?v=$videoId")
+        val key = keyFactory.buildCacheKey(DataSpec(uri))
+        // The rendition's own size first: a substituted addon FLAC is not the
+        // length YouTube would serve for the same id. Media3 records it here
+        // when the probe above opened the stream.
+        val total = contentLengthOf(uri).takeIf { it > 0 }
+            ?: runCatching { StreamResolver.contentLength(videoId) }.getOrNull()
             ?: return false
 
         var position = 0L
         while (position < total) {
             // Checked per chunk, not just once per pass: a track long enough
             // to need several chunks can lose the race partway through one,
-            // and a queue change mid-pass is exactly the "the player has it
+            // and a queue change mid-pass is exactly "the player has it
             // now" case the guard in [fetchWhole] exists for.
             if (pendingQueue.firstOrNull() != videoId) return false
             val length = minOf(CHUNK_BYTES, total - position)
-            if (cache.getCachedBytes(videoId, position, length) < length) {
-                fetch(videoId, position, length)
+            if (cache.getCachedBytes(key, position, length) < length) {
+                fetch(key, uri, position, length, pinKey = true)
                 // Written nowhere means the entry is held elsewhere; the rest
                 // of this pass would be just as wasted. See [fetch] for why
                 // this can be true even though the fetch just above returned
                 // without error.
-                if (cache.getCachedBytes(videoId, position, length) < length) return false
+                if (cache.getCachedBytes(key, position, length) < length) return false
             }
             position += length
         }
@@ -2149,8 +2163,10 @@ object AudioCache {
      * [CacheWriter] fetches only the gaps, so a range already partly on disk —
      * from a track played earlier, or skipped back to — costs only the rest.
      */
-    private suspend fun fetch(videoId: String, position: Long, length: Long) =
-        fetch(videoId, Uri.parse("bitchord://watch?v=$videoId"), position, length)
+    private suspend fun fetch(videoId: String, position: Long, length: Long) {
+        val uri = Uri.parse("bitchord://watch?v=$videoId")
+        fetch(keyFactory.buildCacheKey(DataSpec(uri)), uri, position, length, pinKey = true)
+    }
 
     /**
      * [pinKey] forces the write to land under [cacheKey] instead of wherever
