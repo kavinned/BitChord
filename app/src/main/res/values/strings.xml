@@ -478,6 +478,9 @@
     <string name="pipeline_bitrate">Bitrate</string>
     <string name="pipeline_pcm_data_rate" translatable="false">PCM Data Rate</string>
     <string name="pipeline_channels">Channels</string>
+    <string name="pipeline_next_track" translatable="false">Next</string>
+    <string name="pipeline_prefetch" translatable="false">Prefetch</string>
+    <string name="pipeline_prefetch_none" translatable="false">none</string>
     <string name="pipeline_decoder_name">Decoder Name</string>
     <string name="pipeline_io_rate">I/O Rate</string>
     <string name="pipeline_type">Type</string>

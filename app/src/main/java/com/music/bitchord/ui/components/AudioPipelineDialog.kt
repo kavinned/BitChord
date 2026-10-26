@@ -142,7 +142,10 @@ fun AudioPipelineDialog(
     isPlaying: Boolean = false,
 ) {
     val nerdStats by NerdStats.current.collectAsStateWithLifecycle()
+    val nextPrefetch by NerdStats.nextPrefetch.collectAsStateWithLifecycle()
     val outputStatus by AudioOutputStatus.current.collectAsStateWithLifecycle()
+
+    val prefetchAddons by AppSettings.prefetchAddonSources.collectAsStateWithLifecycle()
 
     val eqEnabled by AppSettings.equalizerEnabled.collectAsStateWithLifecycle()
     val eqPreset by AppSettings.equalizerPreset.collectAsStateWithLifecycle()
@@ -282,6 +285,16 @@ fun AudioPipelineDialog(
                 PipelineRow(stringResource(R.string.pipeline_bitrate), bitrate)
                 PipelineRow(stringResource(R.string.pipeline_pcm_data_rate), pcmDataRate)
                 PipelineRow(stringResource(R.string.pipeline_channels), channels)
+                if (prefetchAddons) {
+                    PipelineRow(
+                        stringResource(R.string.pipeline_next_track),
+                        nextPrefetch?.title?.takeIf { it.isNotBlank() } ?: "—",
+                    )
+                    val prefetched = nextPrefetch?.let { next ->
+                        listOfNotNull(next.sourceName, next.format, next.describe()).joinToString(" · ")
+                    } ?: stringResource(R.string.pipeline_prefetch_none)
+                    PipelineRow(stringResource(R.string.pipeline_prefetch), prefetched)
+                }
             }
 
             // 2. Decoder Stage
