@@ -277,15 +277,18 @@ object NerdStats {
         val format: String?,
         val cachedBytes: Long,
         val totalBytes: Long,
+        val pinned: Boolean,
     ) {
-        /** "pinned", "1.0/4.0 MB (25%)" or "complete (4.0 MB)". */
+        /** "none", "pinned", "1.0/4.0 MB (25%)" or "complete (4.0 MB)". */
         fun describe(): String = when {
+            !pinned -> "none"
             totalBytes > 0 && cachedBytes >= totalBytes -> "complete (${sized(totalBytes)})"
             cachedBytes > 0 && totalBytes > 0 -> {
                 val scale = scaleOf(totalBytes)
                 "${amount(cachedBytes, scale)}/${amount(totalBytes, scale)} " +
                     "${unit(totalBytes)} (${cachedBytes * 100 / totalBytes}%)"
             }
+            cachedBytes > 0 -> "${sized(cachedBytes)} cached"
             else -> "pinned"
         }
 
