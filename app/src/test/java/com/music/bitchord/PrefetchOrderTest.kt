@@ -140,4 +140,42 @@ class PrefetchOrderTest {
         assertNull(picked)
         assertEquals(listOf("A", "B"), asked)
     }
+
+    @Test
+    fun `an inferred 320 does not stop the walk`() {
+        val guessed = source("Guessed")
+        val lossless = source("Lossless")
+        val asked = mutableListOf<String>()
+
+        val picked = walk(
+            listOf(guessed, lossless),
+            mapOf(
+                "Guessed" to StreamFormat("mp3", kbps = 320, kbpsInferred = true),
+                "Lossless" to StreamFormat("flac"),
+            ),
+            asked,
+        )
+
+        assertEquals("Lossless", picked?.first?.displayName)
+        assertEquals(listOf("Guessed", "Lossless"), asked)
+    }
+
+    @Test
+    fun `a below-request 320 does not stop the walk`() = runBlocking {
+        val guessed = source("Guessed")
+        val lossless = source("Lossless")
+        val asked = mutableListOf<String>()
+
+        val picked = SourceResolver.prefetchWalk(listOf(guessed, lossless)) { source ->
+            asked += source.displayName
+            if (source === guessed) {
+                SourceStream(url = "https://guessed/x", format = StreamFormat("mp4", kbps = 320), belowRequest = true)
+            } else {
+                SourceStream(url = "https://lossless/x", format = StreamFormat("flac"))
+            }
+        }
+
+        assertEquals("Lossless", picked?.first?.displayName)
+        assertEquals(listOf("Guessed", "Lossless"), asked)
+    }
 }
