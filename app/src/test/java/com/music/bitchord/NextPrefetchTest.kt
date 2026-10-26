@@ -14,18 +14,29 @@ class NextPrefetchTest {
         NerdStats.forgetLastSession()
     }
 
-    private fun prefetch(cachedBytes: Long, totalBytes: Long) = NerdStats.NextPrefetch(
+    private fun prefetch(cachedBytes: Long, totalBytes: Long, pinned: Boolean = true) = NerdStats.NextPrefetch(
         mediaId = "next-track",
         title = "Ice On My Teeth",
         sourceName = "Nebula",
         format = "FLAC",
         cachedBytes = cachedBytes,
         totalBytes = totalBytes,
+        pinned = pinned,
     )
 
     @Test
     fun `a pin with no bytes yet is pinned`() {
         assertEquals("pinned", prefetch(0, 0).describe())
+    }
+
+    @Test
+    fun `bytes with no known total still show progress`() {
+        assertEquals("1.0 MB cached", prefetch(1_000_000, 0).describe())
+    }
+
+    @Test
+    fun `nothing pinned says none`() {
+        assertEquals("none", prefetch(0, 0, pinned = false).describe())
     }
 
     @Test

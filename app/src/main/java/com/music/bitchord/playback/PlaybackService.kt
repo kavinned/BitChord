@@ -6142,6 +6142,7 @@ class PlaybackService : MediaLibraryService() {
             format = pin?.format?.takeIf { it != StreamFormat() }?.summary,
             cachedBytes = cachedBytes,
             totalBytes = totalBytes,
+            pinned = pin != null,
         ))
     }
 
