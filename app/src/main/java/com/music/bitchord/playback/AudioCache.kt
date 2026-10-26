@@ -447,6 +447,18 @@ object AudioCache {
         else -> videoId
     }
 
+    /**
+     * How many bytes a whole-track pass should fetch, or null when it cannot
+     * be known. YouTube's length is only this entry's length when this entry
+     * is YouTube's; a substituted rendition is a different file.
+     */
+    internal fun wholeTrackTotal(
+        substituting: Boolean,
+        renditionLength: Long,
+        youtubeLength: Long?,
+    ): Long? = renditionLength.takeIf { it > 0 }
+        ?: if (substituting) null else youtubeLength?.takeIf { it > 0 }
+
     private fun phoneKey(spec: androidx.media3.datasource.DataSpec): String =
         spec.uri.getQueryParameter("v")
             // A YouTube id can name several different recordings on disk: the
@@ -1375,12 +1387,18 @@ object AudioCache {
     private suspend fun cacheWholeOnce(videoId: String): Boolean {
         val uri = Uri.parse("bitchord://watch?v=$videoId")
         val key = keyFactory.buildCacheKey(DataSpec(uri))
-        // The rendition's own size first: a substituted addon FLAC is not the
-        // length YouTube would serve for the same id. Media3 records it here
-        // when the probe above opened the stream.
-        val total = contentLengthOf(uri).takeIf { it > 0 }
-            ?: runCatching { StreamResolver.contentLength(videoId) }.getOrNull()
-            ?: return false
+        // The rendition's own size first. YouTube's length is only this
+        // entry's length when this entry *is* YouTube's: a substituted FLAC is
+        // a different file, and sizing its pass from Opus would stop early and
+        // report success. With no own length, substituted renditions stop here
+        // and report partial rather than guess.
+        val renditionLength = contentLengthOf(uri)
+        val youtubeLength = if (renditionLength == 0L && key == videoId) {
+            runCatching { StreamResolver.contentLength(videoId) }.getOrNull()
+        } else {
+            null
+        }
+        val total = wholeTrackTotal(key != videoId, renditionLength, youtubeLength) ?: return false
 
         var position = 0L
         while (position < total) {
