@@ -4,6 +4,7 @@ import com.music.bitchord.data.sources.SourceTrackKeys
 import com.music.bitchord.data.sources.StreamFormat
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.update
+import java.util.Locale
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicLong
 
@@ -279,6 +280,48 @@ object NerdStats {
     }
 
     /**
+     * What read-ahead has ready for the track after the one playing.
+     *
+     * Separate from [Snapshot] on purpose: a snapshot describes the current
+     * track and is refused when it names another one, so the next track's
+     * preparation needs its own state.
+     */
+    data class NextPrefetch(
+        val mediaId: String,
+        val title: String?,
+        val sourceName: String?,
+        val format: String?,
+        val cachedBytes: Long,
+        val totalBytes: Long,
+    ) {
+        /** "pinned", "1.0/4.0 MB (25%)" or "complete (4.0 MB)". */
+        fun describe(): String = when {
+            totalBytes > 0 && cachedBytes >= totalBytes -> "complete (${sized(totalBytes)})"
+            cachedBytes > 0 && totalBytes > 0 -> {
+                val scale = scaleOf(totalBytes)
+                "${amount(cachedBytes, scale)}/${amount(totalBytes, scale)} " +
+                    "${unit(totalBytes)} (${cachedBytes * 100 / totalBytes}%)"
+            }
+            else -> "pinned"
+        }
+
+        private fun sized(bytes: Long): String = "${amount(bytes, scaleOf(bytes))} ${unit(bytes)}"
+
+        private fun scaleOf(bytes: Long): Double = if (bytes >= 1_000_000) 1_000_000.0 else 1_000.0
+
+        private fun amount(bytes: Long, scale: Double): String =
+            "%.1f".format(Locale.ROOT, bytes / scale)
+
+        private fun unit(bytes: Long): String = if (bytes >= 1_000_000) "MB" else "KB"
+    }
+
+    val nextPrefetch = MutableStateFlow<NextPrefetch?>(null)
+
+    fun publishNextPrefetch(value: NextPrefetch?) {
+        nextPrefetch.value = value
+    }
+
+    /**
      * YouTube video ids with a module lookup racing YouTube's own resolve
      * for the stream to actually play — see
      * [PlaybackService][com.music.bitchord.playback.PlaybackService]'s
@@ -503,6 +546,7 @@ object NerdStats {
         activeMediaId = null
         current.value = null
         racingLossless.value = emptySet()
+        nextPrefetch.value = null
         picked.clear()
         declared.clear()
         sources.clear()
