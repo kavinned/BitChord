@@ -305,6 +305,32 @@ object SourceResolver {
         kind.worthPrefetching &&
             (kind != SourceKind.ADDON || AppSettings.prefetchAddonSources.value)
 
+    /** The first source, in order, whose answer is worth stopping at. */
+    internal suspend fun prefetchWalk(
+        sources: List<MusicSource>,
+        lookup: suspend (MusicSource) -> SourceStream?,
+    ): Pair<MusicSource, SourceStream>? {
+        var bestLossy: Pair<MusicSource, SourceStream>? = null
+        for (source in sources) {
+            val stream = lookup(source) ?: continue
+            val kbps = stream.format.kbps ?: 0
+            if (stream.format.isLossless == true || kbps >= PREFETCH_LOSSY_STOP_KBPS) {
+                return source to stream
+            }
+            if (bestLossy == null || kbps > (bestLossy.second.format.kbps ?: 0)) {
+                bestLossy = source to stream
+            }
+        }
+        return bestLossy
+    }
+
+    /**
+     * The lossy tier that is good enough to stop looking at lower-ranked
+     * sources for. 320 is the best a lossy source offers, so nothing further
+     * down the list can improve on it.
+     */
+    private const val PREFETCH_LOSSY_STOP_KBPS = 320
+
     /**
      * The copy of [target] held by a source quick enough to ask about *before*
      * the track is played — or null when no such source is enabled, or none of
@@ -336,7 +362,9 @@ object SourceResolver {
         val youtube = active.firstOrNull { it.kind == SourceKind.YOUTUBE } ?: return null
         val quick = rankedAbove(youtube.configId, active).filter { canPrefetch(it.kind) }
         if (quick.isEmpty()) return null
-        val (source, stream) = bestAcross(quick, target, requestForNow()) ?: return null
+        val (source, stream) = prefetchWalk(quick) {
+            matchAndStream(it, target, requestForNow())
+        } ?: return null
         TrackLog.d(
             TAG,
             "warmed: '${target.title}' from ${source.displayName} at ${stream.format.summary}",
