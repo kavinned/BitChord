@@ -55,6 +55,7 @@ import androidx.media3.exoplayer.mediacodec.MediaCodecUtil
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
 import androidx.media3.datasource.DataSource
 import androidx.media3.datasource.DataSpec
+import androidx.media3.datasource.HttpDataSource
 import androidx.media3.datasource.TransferListener
 import androidx.media3.exoplayer.upstream.BandwidthMeter
 import androidx.media3.exoplayer.upstream.DefaultBandwidthMeter
@@ -1400,7 +1401,16 @@ class PlaybackService : MediaLibraryService() {
                         if (directYouTube) {
                             SourceResolver.youtubeFallback(SourceResolver.targetIn(dataSpec.uri))
                         } else {
-                            SourceResolver.resolve(dataSpec.uri)
+                            // Sources that already refused this track are left
+                            // out, so the walk lands on the next one rather than
+                            // on the same server answering the same dead URL —
+                            // see [StreamChoice.refuse].
+                            SourceResolver.resolve(
+                                dataSpec.uri,
+                                skip = mediaIdIn(dataSpec.uri)
+                                    ?.let(StreamChoice::refusing)
+                                    .orEmpty(),
+                            )
                         }
                     }
                 } ?: throw java.io.IOException(
@@ -3651,8 +3661,11 @@ class PlaybackService : MediaLibraryService() {
      * Only [StreamResolver.PermanentlyUnplayableException] is refused, and it is
      * refused rather than delayed because the resolver has already established
      * the answer cannot change — it is the type it uses to say exactly that.
-     * Everything else keeps the default behaviour, which is right: a shaped
-     * response or a dropped connection is worth another go.
+     * A refused HTTP status is refused too, and for the same reason: the URL is
+     * fixed and the resolve is cached, so the second attempt re-sends the same
+     * request to the same dead host — see [statusIsWorthRetrying]. Everything
+     * else keeps the default behaviour, which is right: a shaped response or a
+     * dropped connection is worth another go.
      */
     private class PermanentAwareLoadErrorPolicy : DefaultLoadErrorHandlingPolicy() {
         override fun getRetryDelayMsFor(loadErrorInfo: LoadErrorHandlingPolicy.LoadErrorInfo): Long {
@@ -3665,6 +3678,16 @@ class PlaybackService : MediaLibraryService() {
             var depth = 0
             while (cause != null && depth++ < CAUSE_DEPTH) {
                 if (cause is StreamResolver.PermanentlyUnplayableException) return true
+                // A status is an answer, not a hiccup. Asking the same fixed,
+                // signed URL again — seconds later, from the same resolve — is
+                // what the default backoff does to a 502, and it cannot
+                // succeed: measured at fifty-five seconds of a track that never
+                // started, before the recovery that handled it in one ran.
+                if (cause is HttpDataSource.InvalidResponseCodeException &&
+                    !statusIsWorthRetrying(cause.responseCode)
+                ) {
+                    return true
+                }
                 cause = cause.cause?.takeIf { it !== cause }
             }
             return false
@@ -3870,16 +3893,52 @@ class PlaybackService : MediaLibraryService() {
         uri?.getQueryParameter("v")
             ?.takeIf { diedOnModuleStream || StreamChoice.isSubstitute(it) }
             ?.let { videoId ->
-                StreamChoice.refuseSubstitutes(videoId)
-                TrackLog.w(
-                    "BitChord",
-                    "$videoId broke on a substituted stream; YouTube serves it for now",
-                    about = mediaId,
-                )
+                // Which source failed, when the choice still remembers one. A
+                // status is evidence against *that* source, not against every
+                // source: refusing the whole track skips the module race
+                // outright, which is how a dead Nebula URL also took JioSaavn's
+                // copy down with it. A die on an upgraded URI names nothing —
+                // [QualityUpgrade] made that choice without [StreamChoice] —
+                // and keeps the track-wide refusal, being the one case with no
+                // source to blame.
+                val failed = StreamChoice.of(videoId)?.sourceConfigId
+                if (failed != null) {
+                    StreamChoice.refuse(failed, videoId, refusedStatusIn(error) ?: 0)
+                    TrackLog.w(
+                        "BitChord",
+                        "$videoId broke on $failed; the next source in the ranking serves it for now",
+                        about = mediaId,
+                    )
+                } else {
+                    StreamChoice.refuseSubstitutes(videoId)
+                    TrackLog.w(
+                        "BitChord",
+                        "$videoId broke on a substituted stream; YouTube serves it for now",
+                        about = mediaId,
+                    )
+                }
                 // And no swapping back to it mid-song either: the second look asks
                 // the same catalogues the same question and would cut the audio that
                 // just recovered to land on the same refusal.
                 QualityUpgrade.refuseUpgrades(videoId)
+            }
+        // A track played from its own source row has no `v` and no
+        // [StreamChoice] entry at all — [SourceResolver.resolve]'s answer goes
+        // straight to the data source — so the block above cannot name what
+        // failed. The URI's own `s` does, and it is the whole point of the
+        // walk: leaving it unrecorded is a retry that asks the same source the
+        // same question and gets the same dead URL back.
+        uri?.takeIf { it.authority == "source" }
+            ?.getQueryParameter("s")
+            ?.let { sourceId ->
+                val mediaIdForKey = mediaIdIn(uri) ?: return@let
+                val status = refusedStatusIn(error) ?: 0
+                StreamChoice.refuse(sourceId, mediaIdForKey, status)
+                TrackLog.w(
+                    "BitChord",
+                    "$mediaId broke on $sourceId; the next source in the ranking serves it for now",
+                    about = mediaId,
+                )
             }
         uri?.getQueryParameter("v")?.let(StreamChoice::forget)
         // Read now, not after the delay: it describes the failure, and the
@@ -3944,6 +4003,16 @@ class PlaybackService : MediaLibraryService() {
         val fallback = item.toYouTubeFallbackMediaItem() ?: return false
         val mediaId = item.mediaId
 
+        // Refused, not exhausted. When the choice names the source that died and
+        // there is another one ranked above YouTube, the right answer is to walk
+        // to it, not to rebuild the item as YouTube — that rebuild gives up every
+        // module's copy of the track. Handing the track back (`false`) lets the
+        // ordinary recovery run: it records which source refused, discards the
+        // entry and the choice, and prepares again, and the resolver then walks
+        // past the refusal. With nothing ranked above YouTube there is no walk to
+        // make, and the rebuild below is what keeps the track playing.
+        val failed = videoId?.let { StreamChoice.of(it)?.sourceConfigId }
+        if (failed != null && SourceResolver.canSubstituteForYouTube()) return false
         QualityUpgrade.forget(mediaId)
         QualityUpgrade.refuseUpgrades(mediaId)
         videoId?.let {
@@ -5625,15 +5694,15 @@ class PlaybackService : MediaLibraryService() {
         videoId: String,
         target: TrackMatcher.Target,
     ): Resolved {
-        // A substitute already broke this track once — see
-        // [StreamChoice.refuseSubstitutes]. Racing the modules again would find
-        // the same catalogue holding the same unplayable URL, so there is
-        // nothing to race: YouTube is the one answer here that hasn't failed.
-        // Skipped entirely rather than merely deprioritised, because a lookup
-        // that loses is handed to [QualityUpgrade] rather than dropped, and
-        // handing over the search that just cost three attempts would only
-        // schedule a fourth.
-        if (StreamChoice.substitutesRefused(videoId)) {
+        // Nothing left to race: a track-wide refusal (an upgraded URI died and
+        // no source is named), or every source ranked above YouTube already
+        // refused for this track. Racing them again is a walk to a verdict
+        // already in hand, and a lookup that loses is handed to
+        // [QualityUpgrade] rather than dropped, which would schedule a fourth.
+        val skip = StreamChoice.refusing(videoId)
+        if (StreamChoice.substitutesRefused(videoId) ||
+            (skip.isNotEmpty() && !SourceResolver.hasUnrefusedModule(skip))
+        ) {
             return Resolved.YouTube(StreamResolver.resolve(videoId))
         }
         NerdStats.onLosslessRaceStart(videoId)
@@ -5643,7 +5712,7 @@ class PlaybackService : MediaLibraryService() {
         // log from a scope that knows nothing, which is most of what a resolve
         // has to say about itself.
         val lookup = scope.async(Dispatchers.IO + TrackLog.about(videoId)) {
-            withTimeoutOrNull(SUBSTITUTE_TIMEOUT_MS) { SourceResolver.substituteForYouTube(target) }
+            withTimeoutOrNull(SUBSTITUTE_TIMEOUT_MS) { SourceResolver.substituteForYouTube(target, skip) }
         }
         // Started now rather than after the modules have had their say, and
         // wrapped rather than thrown from: it is awaited only on the paths
@@ -9521,3 +9590,18 @@ class PlaybackService : MediaLibraryService() {
         const val PARTY_QUEUE_ECHO_TIMEOUT_MS = 5_000L
     }
 }
+
+/**
+ * Whether a refused HTTP status leaves anything to gain by asking again.
+ *
+ * 408 and 429 name their own remedy — the server did not answer in time, or
+ * asked for a slower caller — so the ordinary backoff stays. Every other
+ * refusal is an answer about *this request*: a signature that expired, a file
+ * that is not there, an edge that cannot serve the bytes. The resolve is cached
+ * and the URL is fixed, so the next attempt re-sends the same request to the
+ * same dead host. Measured on a 502 from a pinned Nebula stream: fifty-five
+ * seconds of a track that never started, before the recovery that handled it in
+ * one ran.
+ */
+internal fun statusIsWorthRetrying(responseCode: Int): Boolean =
+    responseCode == 408 || responseCode == 429
