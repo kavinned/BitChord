@@ -457,6 +457,42 @@ object AudioCache {
     }
 
     /**
+     * The key [videoId]'s current play must use, given what has already been
+     * opened under it.
+     *
+     * The pin is only known *after* the resolver answers, and the resolver runs
+     * inside the open that has already fixed its key — so a cold play's first
+     * open chooses the plain `#alt` entry and pins its source mid-open.
+     * Switching to `#alt:<source>` on the next open would leave the first entry
+     * holding a prefix of the same file forever, and would fill the second one
+     * with a second copy of it.
+     *
+     * [served] records which source filled each key this session — see
+     * [recordServed]. An entry this play has already opened wins; otherwise a
+     * plain entry filled by the very source now pinned wins; otherwise the
+     * pinned key does. That last branch is what keeps a stale YouTube entry
+     * from standing in for a prefetched FLAC.
+     */
+    internal fun cacheKeyFor(
+        videoId: String,
+        rendition: String?,
+        substituting: Boolean,
+        atmosSuffix: String = atmosKeySuffix(),
+        sourceId: String? = null,
+        served: Map<String, String> = emptyMap(),
+    ): String {
+        if (rendition != null) return "$videoId#$rendition"
+        val plain = videoCacheKey(videoId, null, substituting, atmosSuffix)
+        if (sourceId == null) return plain
+        val pinned = videoCacheKey(videoId, null, substituting, atmosSuffix, sourceId)
+        return when {
+            served.containsKey(pinned) -> pinned
+            served[plain] == sourceId -> plain
+            else -> pinned
+        }
+    }
+
+    /**
      * How many bytes a whole-track pass should fetch, or null when it cannot
      * be known. YouTube's length is only this entry's length when this entry
      * is YouTube's; a substituted rendition is a different file.
@@ -503,11 +539,12 @@ object AudioCache {
             // still held.
             ?.let { videoId ->
                 val rendition = QualityUpgrade.cacheTag(spec.uri)
-                val key = videoCacheKey(
+                val key = cacheKeyFor(
                     videoId,
                     rendition,
                     SourceResolver.canSubstituteForYouTube(),
                     sourceId = StreamChoice.of(videoId)?.sourceConfigId,
+                    served = servedSources,
                 )
                 if (rendition != null) key else completeSibling(videoId, key) ?: key
             }
@@ -687,6 +724,14 @@ object AudioCache {
     private val playedIds = ConcurrentHashMap.newKeySet<String>()
 
     /**
+     * Which source has filled each cache key this session, recorded at the
+     * resolver seam ([recordServed]) and keyed by cache key. Empty string means
+     * YouTube (or no source). Read only by [cacheKeyFor], to keep one play on
+     * the entry it started filling.
+     */
+    private val servedSources = ConcurrentHashMap<String, String>()
+
+    /**
      * Remembers [songs]' metadata for the cache entries they are about to
      * fill, and backfills it into any entry already tagged without it.
      */
@@ -768,6 +813,11 @@ object AudioCache {
         if (spec.uri.scheme != "bitchord") return
         val mediaId = mediaIdIn(spec.uri) ?: return
         val key = spec.key ?: keyFactory.buildCacheKey(spec)
+        // Whose bytes land under [key], for [cacheKeyFor]. The resolver has
+        // already recorded its choice, so this is the same answer the player
+        // was handed a moment ago.
+        if (servedSources.size >= MAX_SERVED_KEYS) servedSources.clear()
+        servedSources[key] = StreamChoice.of(mediaId)?.sourceConfigId ?: ""
         val origin = originOf(spec.uri, mediaId, servedUrl)
         val song = notedSongs[mediaId]
         // Automix's analysis-only read: its own YouTube Opus download, made
@@ -1132,6 +1182,9 @@ object AudioCache {
     /** Set once the player has played the track from this entry. */
     private const val META_PLAYED = "bc_played"
     private const val MAX_NOTED_SONGS = 256
+
+    /** Bounded like the other session maps; only the queue's keys ever matter. */
+    private const val MAX_SERVED_KEYS = 256
     private const val COPY_BUFFER_BYTES = 64 * 1024
 
     private const val CACHE_DIR_NAME = "audio_cache"
