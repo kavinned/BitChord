@@ -1389,7 +1389,11 @@ object AudioCache {
                 // URL-only warm-up it did before — YouTube resolves the track at
                 // playback time as usual.
                 val warmed = if (substitutable && target != null && !pinnedToYouTube) {
-                    runCatching { SourceResolver.prefetchSubstitute(target) }
+                    // Sources that already refused this track are left out. A
+                    // refusal is minutes old at most and the lookup behind it is
+                    // deterministic, so pinning the same source again only
+                    // guarantees that playback opens the URL that just failed.
+                    runCatching { SourceResolver.prefetchSubstitute(target, StreamChoice.refusing(next)) }
                         .onFailure { TrackLog.d(TAG, "warm-up substitute failed for $next: ${it.message}", about = next) }
                         .getOrNull()
                         ?.also { StreamChoice.remember(next, it, substituted = true) }

@@ -190,8 +190,9 @@ object SourceResolver {
         // source that answered "no" a moment ago answers "no" again, because the
         // lookup behind it is deterministic, so the walk moves past it instead
         // of spending the retry on the same dead URL. A row picked by hand is
-        // the exception: that row is what the listener chose, another source's
-        // recording of the same song is not it, and the track is left to fail.
+        // the exception: that row is what the listener chose, and a different
+        // recording of the same song is not it. The row is asked again as it is;
+        // only the fallback list below is narrowed by `skip`.
         val pinnedRefused = !picked && pinned != null && pinned.configId in skip
         if (!picked && request is StreamRequest.Lossless && pinned?.kind?.canServeLossless != true) {
             for (source in rankedFor(rankedAbove(configId, active), skip)) {
@@ -832,6 +833,23 @@ object SourceResolver {
         val active = SourceRegistry.activeForPlayback()
         val youtube = active.firstOrNull { it.kind == SourceKind.YOUTUBE } ?: return false
         return rankedFor(rankedAbove(youtube.configId, active), skip).isNotEmpty()
+    }
+
+    /**
+     * How many attempts a recovery may spend walking down the ranking before it
+     * is over.
+     *
+     * One more than the number of sources that can answer, capped by
+     * [PlaybackService.MAX_RECOVERIES][com.music.bitchord.playback.PlaybackService]
+     * so a device with many sources does not turn a dead track into a long
+     * pause. The fixed budget this replaces was sized for *retries of one
+     * stream*; a walk spends one attempt per source, and three bad modules used
+     * to skip a track that had a working YouTube copy waiting behind them.
+     */
+    internal fun walkBudget(skip: Set<String>): Int {
+        val active = SourceRegistry.activeForPlayback()
+        val youtube = active.firstOrNull { it.kind == SourceKind.YOUTUBE } ?: return 1
+        return rankedFor(rankedAbove(youtube.configId, active), skip).size + 1
     }
 
     /**

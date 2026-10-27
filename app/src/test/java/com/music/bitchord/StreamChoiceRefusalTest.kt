@@ -27,17 +27,17 @@ class StreamChoiceRefusalTest {
     fun `a refused source is skipped for that track only`() {
         StreamChoice.refuse("nebula", "abc", 502)
 
-        assertTrue(StreamChoice.refusedNow("nebula", "abc"))
-        assertFalse(StreamChoice.refusedNow("jiosaavn", "abc"))
-        assertFalse(StreamChoice.refusedNow("nebula", "xyz"))
+        assertEquals(setOf("nebula"), StreamChoice.refusing("abc"))
+        assertEquals(emptySet<String>(), StreamChoice.refusing("xyz"))
+        assertFalse(StreamChoice.substitutesRefused("abc"))
     }
 
     @Test
-    fun `a track-wide refusal covers every source`() {
+    fun `a track-wide refusal leaves the source-level one alone`() {
         StreamChoice.refuseSubstitutes("abc")
 
-        assertTrue(StreamChoice.refusedNow("nebula", "abc"))
-        assertTrue(StreamChoice.refusedNow(null, "abc"))
+        assertEquals(emptySet<String>(), StreamChoice.refusing("abc"))
+        assertTrue(StreamChoice.substitutesRefused("abc"))
     }
 
     @Test
@@ -54,5 +54,17 @@ class StreamChoiceRefusalTest {
     fun `a status outlives a source that merely went quiet`() {
         assertEquals(10 * 60 * 1000L, StreamChoice.refusalLifetimeMs(502))
         assertEquals(2 * 60 * 1000L, StreamChoice.refusalLifetimeMs(0))
+    }
+
+    /**
+     * The map is bounded, and the bound must not cost a track that is mid-walk.
+     * Filling it has to evict, not empty — an emptied map hands the retry the
+     * same dead URL back, which is the loop this whole change exists to end.
+     */
+    @Test
+    fun `filling the map keeps the refusal it just outlived`() {
+        repeat(40) { StreamChoice.refuse("src$it", "track$it", 502) }
+
+        assertEquals(setOf("src39"), StreamChoice.refusing("track39"))
     }
 }
