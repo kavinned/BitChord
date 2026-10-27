@@ -16,6 +16,7 @@ import androidx.media3.common.util.UnstableApi
 import androidx.media3.database.StandaloneDatabaseProvider
 import androidx.media3.datasource.DataSource
 import androidx.media3.datasource.DataSpec
+import androidx.media3.datasource.HttpDataSource
 import androidx.media3.datasource.TransferListener
 import androidx.media3.datasource.cache.CacheDataSource
 import androidx.media3.datasource.cache.CacheKeyFactory
@@ -2449,4 +2450,26 @@ internal fun cachedContainerOf(magic: ByteArray): Pair<String, String>? {
         ascii(0, 4) == "fLaC" -> "flac" to "audio/flac"
         else -> null
     }
+}
+
+/**
+ * The HTTP status behind a failure, however deeply Media3 wrapped it, or null
+ * when the failure was not a refusal at all.
+ *
+ * Recovery needs it to tell a server saying no from a connection dropping:
+ * only the first is a dead URL that another source can be tried for.
+ *
+ * Unwrapped by hand for the same reason [PlaybackService.permanentReason] is:
+ * by the time this arrives the throwable has been through Media3's loader, so
+ * the refusal is wrapped in two others. Kept at the top level so the recovery
+ * path can ask without holding a cache instance.
+ */
+internal fun refusedStatusIn(error: Throwable?): Int? {
+    var cause = error
+    var depth = 0
+    while (cause != null && depth++ < 8) {
+        if (cause is HttpDataSource.InvalidResponseCodeException) return cause.responseCode
+        cause = cause.cause?.takeIf { it !== cause }
+    }
+    return null
 }

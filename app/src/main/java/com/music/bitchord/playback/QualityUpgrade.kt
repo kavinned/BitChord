@@ -489,6 +489,10 @@ object QualityUpgrade {
                 waiting.target.copy(durationSec = effectiveDurationSec),
                 playing = waiting.playing,
                 servedBy = waiting.servedBy,
+                // A source already refused for this track is not asked again:
+                // the lookup is deterministic and answers with the URL that
+                // just failed, and the swap would cut the audio to land on it.
+                skip = StreamChoice.refusing(mediaId),
             ).also {
                 found = it
                 if (it != null && needsLosslessFollowUp(it.format)) {
