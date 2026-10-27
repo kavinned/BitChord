@@ -27,4 +27,16 @@ class ContentRangeTotalTest {
     fun `a zero length is not a total`() {
         assertNull(AudioCache.contentRangeTotal(null, "0"))
     }
+
+    @Test
+    fun `an error response names no total`() {
+        assertNull(AudioCache.probeTotal(404, null, "204"))
+        assertNull(AudioCache.probeTotal(500, "bytes 0-0/30000000", "30000000"))
+    }
+
+    @Test
+    fun `a successful response names the total`() {
+        assertEquals(30_000_000L, AudioCache.probeTotal(206, "bytes 0-0/30000000", null))
+        assertEquals(3_416_463L, AudioCache.probeTotal(200, null, "3416463"))
+    }
 }

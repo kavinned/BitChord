@@ -520,6 +520,14 @@ object AudioCache {
         (contentRange?.substringAfterLast('/')?.toLongOrNull()
             ?: contentLength?.toLongOrNull())?.takeIf { it > 0 }
 
+    /**
+     * The total a probe answers with, or null when the server refused the
+     * request: an error page's body length is not the file's, and recording it
+     * as the entry's size would make a few hundred bytes read as a whole track.
+     */
+    internal fun probeTotal(statusCode: Int, contentRange: String?, contentLength: String?): Long? =
+        if (statusCode in 200..299) contentRangeTotal(contentRange, contentLength) else null
+
     private fun phoneKey(spec: androidx.media3.datasource.DataSpec): String =
         spec.uri.getQueryParameter("v")
             // A YouTube id can name several different recordings on disk: the
@@ -1506,7 +1514,11 @@ object AudioCache {
                 .apply { stream.headers.forEach { (name, value) -> header(name, value) } }
                 .build()
             Http.client.newCall(request).execute().use { response ->
-                contentRangeTotal(response.header("Content-Range"), response.header("Content-Length"))
+                probeTotal(
+                    response.code,
+                    response.header("Content-Range"),
+                    response.header("Content-Length"),
+                )
             }
         }.getOrNull()
     }
