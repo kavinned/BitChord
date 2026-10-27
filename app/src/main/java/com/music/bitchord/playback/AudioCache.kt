@@ -7,6 +7,7 @@ import android.net.NetworkCapabilities
 import android.net.Uri
 import android.os.SystemClock
 import com.music.bitchord.R
+import com.music.bitchord.data.Http
 import com.music.bitchord.data.TrackLog
 import com.music.bitchord.playback.smart.AutomixAnalysisSource
 import androidx.media3.common.C
@@ -29,6 +30,7 @@ import com.music.bitchord.data.sources.DeviceCodecs
 import com.music.bitchord.data.sources.SourceKind
 import com.music.bitchord.data.sources.SourceRegistry
 import com.music.bitchord.data.sources.SourceResolver
+import com.music.bitchord.data.sources.SourceStream
 import com.music.bitchord.data.sources.TrackMatcher
 import com.music.bitchord.download.Downloads
 import kotlinx.coroutines.CoroutineScope
@@ -465,6 +467,15 @@ object AudioCache {
         youtubeLength: Long?,
     ): Long? = renditionLength.takeIf { it > 0 }
         ?: if (substituting) null else youtubeLength?.takeIf { it > 0 }
+
+    /**
+     * The total a ranged probe learned: `bytes 0-0/30000000` names the file,
+     * an asterisk in place of the total does not and leaves [contentLength] to
+     * answer.
+     */
+    internal fun contentRangeTotal(contentRange: String?, contentLength: String?): Long? =
+        (contentRange?.substringAfterLast('/')?.toLongOrNull()
+            ?: contentLength?.toLongOrNull())?.takeIf { it > 0 }
 
     private fun phoneKey(spec: androidx.media3.datasource.DataSpec): String =
         spec.uri.getQueryParameter("v")
@@ -1324,6 +1335,18 @@ object AudioCache {
                 if (cacheBytes) {
                     launch(TrackLog.about(next)) {
                         delay(PREFETCH_DELAY_MS)
+                        // The pinned copy's own size, before anything reads
+                        // it: the head pass below opens the entry with a fixed
+                        // range, and a length recorded by that open is the
+                        // range's. Without the server's number the whole pass
+                        // either cannot start or stops at the prefix.
+                        if (warmed != null) {
+                            val uri = Uri.parse("bitchord://watch?v=$next")
+                            StreamChoice.of(next)?.let { pinned ->
+                                runCatching { streamLength(pinned) }.getOrNull()
+                                    ?.let { total -> recordLength(cacheKeyOf(uri), total) }
+                            }
+                        }
                         fetch(next, 0, PRELOAD_BYTES)
                         fetchWhole(next)
                     }
@@ -1366,6 +1389,29 @@ object AudioCache {
         pendingQueue = emptyList()
         job?.cancel()
         job = null
+    }
+
+    /**
+     * How many bytes [stream] holds, straight from its server.
+     *
+     * One ranged request for a single byte: a `206` answers with
+     * `Content-Range: bytes 0-0/<total>`. Asked before a read-ahead pass
+     * because a ranged open of the entry records the *range* as its length —
+     * see [recordLength] — and a pass sized from that stops at the prefix and
+     * calls it complete. Shared with playback's standby deck, which needs the
+     * same number to build a seek map.
+     */
+    internal suspend fun streamLength(stream: SourceStream): Long? = withContext(Dispatchers.IO) {
+        runCatching {
+            val request = okhttp3.Request.Builder()
+                .url(stream.url)
+                .header("Range", "bytes=0-0")
+                .apply { stream.headers.forEach { (name, value) -> header(name, value) } }
+                .build()
+            Http.client.newCall(request).execute().use { response ->
+                contentRangeTotal(response.header("Content-Range"), response.header("Content-Length"))
+            }
+        }.getOrNull()
     }
 
     /**
@@ -1832,15 +1878,29 @@ object AudioCache {
      * Cheap because [StreamResolver] has the number already: it was read to
      * resolve the stream this fetch just pulled from.
      */
-    private fun recordContentLength(videoId: String, total: Long) {
-        if (ContentMetadata.getContentLength(cache.getContentMetadata(videoId)) > 0) return
+    private fun recordContentLength(videoId: String, total: Long) = recordLength(videoId, total)
+
+    /**
+     * Records [total] as [key]'s size, and only ever grows it.
+     *
+     * A ranged open of an entry records its *range* as the content length, so
+     * the first number written for a prefetched substitute can be a megabyte
+     * where the file is thirty. Growing replaces that with the server's answer;
+     * never shrinking keeps a smaller, contradictory answer from trimming spans
+     * that are on disk.
+     */
+    private fun recordLength(key: String, total: Long) {
         if (total <= 0) return
+        val current = runCatching {
+            ContentMetadata.getContentLength(cache.getContentMetadata(key))
+        }.getOrDefault(0L)
+        if (total <= current) return
         runCatching {
             cache.applyContentMetadataMutations(
-                videoId,
+                key,
                 ContentMetadataMutations().apply { ContentMetadataMutations.setContentLength(this, total) },
             )
-        }.onFailure { TrackLog.d(TAG, "could not record length for $videoId: ${it.message}", about = videoId) }
+        }.onFailure { TrackLog.d(TAG, "could not record length for $key: ${it.message}") }
     }
 
     /**
