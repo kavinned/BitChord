@@ -102,9 +102,11 @@ object SourceResolver {
 
     /**
      * @param uri a `bitchord://source?...` URI as built by [SourceRegistry.trackUri].
+     * @param skip config ids already refused for this track, left out of both
+     *   the upgrade walk and the fallback list.
      * @return the stream, or null when nothing enabled could serve the track.
      */
-    suspend fun resolve(uri: Uri): SourceStream? {
+    suspend fun resolve(uri: Uri, skip: Set<String> = emptySet()): SourceStream? {
         val configId = uri.getQueryParameter("s") ?: return null
         val trackId = uri.getQueryParameter("t") ?: return null
         return resolve(
@@ -112,6 +114,7 @@ object SourceResolver {
             trackId = trackId,
             target = targetIn(uri),
             pickedMix = uri.getQueryParameter(MIX_PARAM),
+            skip = skip,
         )
     }
 
@@ -164,6 +167,7 @@ object SourceResolver {
         trackId: String,
         target: TrackMatcher.Target,
         pickedMix: String? = null,
+        skip: Set<String> = emptySet(),
     ): SourceStream? {
         val request = requestForNow()
         val active = SourceRegistry.activeForPlayback()
@@ -181,8 +185,16 @@ object SourceResolver {
         // expressible.
         // A row picked by hand is not up for substitution — see [MIX_PARAM].
         val picked = pickedMix != null && pinned is AddonSource
+        // The pin is asked first unless it refused this track already. It is
+        // still the listener's own source and still the first choice — but a
+        // source that answered "no" a moment ago answers "no" again, because the
+        // lookup behind it is deterministic, so the walk moves past it instead
+        // of spending the retry on the same dead URL. A row picked by hand is
+        // the exception: that row is what the listener chose, another source's
+        // recording of the same song is not it, and the track is left to fail.
+        val pinnedRefused = !picked && pinned != null && pinned.configId in skip
         if (!picked && request is StreamRequest.Lossless && pinned?.kind?.canServeLossless != true) {
-            for (source in rankedAbove(configId, active)) {
+            for (source in rankedFor(rankedAbove(configId, active), skip)) {
                 if (!source.kind.canServeLossless) continue
                 val upgraded = matchAndStream(source, target, request) ?: continue
                 // Only a genuinely lossless answer is an upgrade. A source that
@@ -198,7 +210,7 @@ object SourceResolver {
             }
         }
 
-        if (pinned != null) {
+        if (pinned != null && !pinnedRefused) {
             attempt(pinned) {
                 if (picked) {
                     (pinned as AddonSource).stream(trackId, request, stereoOnly = pickedMix == MIX_STEREO)
@@ -217,9 +229,12 @@ object SourceResolver {
         // Not YouTube, though, for a row picked from the Addons search: its
         // Opus is a lesser copy of a different upload, and the listener chose
         // this addon's precisely to not be hearing it — see [MIX_PARAM].
-        val fallbacks = active.filterNot {
-            it.configId == configId || (pickedMix != null && it.kind == SourceKind.YOUTUBE)
-        }
+        val fallbacks = rankedFor(
+            active.filterNot {
+                it.configId == configId || (pickedMix != null && it.kind == SourceKind.YOUTUBE)
+            },
+            skip,
+        )
         val (fallbackSource, stream) = bestAcross(fallbacks, target, request) ?: return null
         TrackLog.d(TAG, "fallback: '${target.title}' served by ${fallbackSource.displayName}")
         return stream
@@ -248,7 +263,10 @@ object SourceResolver {
      * runs with sound already playing and is where a slow source's better answer
      * gets its hearing.
      */
-    suspend fun substituteForYouTube(target: TrackMatcher.Target): SourceStream? {
+    suspend fun substituteForYouTube(
+        target: TrackMatcher.Target,
+        skip: Set<String> = emptySet(),
+    ): SourceStream? {
         // Video rows always use YouTube's own stream unless the listener
         // explicitly converts the current item in the player. A module match
         // is another recording and can be a wrong song altogether.
@@ -256,7 +274,9 @@ object SourceResolver {
         val active = SourceRegistry.activeForPlayback()
         val youtube = active.firstOrNull { it.kind == SourceKind.YOUTUBE } ?: return null
         val request = requestForNow()
-        val (source, stream) = bestAcross(rankedAbove(youtube.configId, active), target, request)
+        val sources = rankedFor(rankedAbove(youtube.configId, active), skip)
+        if (sources.isEmpty()) return null
+        val (source, stream) = bestAcross(sources, target, request)
             ?: return null
         // Says what was found, not what the caller will do with it. This
         // line used to read "substituted" unconditionally, including for
@@ -361,11 +381,15 @@ object SourceResolver {
      * to YouTube, which is what the caller would have done anyway: nothing has
      * been pinned, so the ordinary resolve at playback time is untouched.
      */
-    suspend fun prefetchSubstitute(target: TrackMatcher.Target): SourceStream? {
+    suspend fun prefetchSubstitute(
+        target: TrackMatcher.Target,
+        skip: Set<String> = emptySet(),
+    ): SourceStream? {
         if (target.title.isBlank() || target.isVideo) return null
         val active = SourceRegistry.activeForPlayback()
         val youtube = active.firstOrNull { it.kind == SourceKind.YOUTUBE } ?: return null
-        val quick = rankedAbove(youtube.configId, active).filter { canPrefetch(it.kind) }
+        val quick = rankedFor(rankedAbove(youtube.configId, active), skip)
+            .filter { canPrefetch(it.kind) }
         if (quick.isEmpty()) return null
         val (source, stream) = prefetchWalk(quick) {
             matchAndStream(it, target, requestForNow())
@@ -432,6 +456,7 @@ object SourceResolver {
         target: TrackMatcher.Target,
         playing: StreamFormat? = null,
         servedBy: String? = null,
+        skip: Set<String> = emptySet(),
     ): SourceStream? {
         if (target.title.isBlank() || target.durationSec == null || target.isVideo) return null
         val request = requestForNow()
@@ -466,7 +491,7 @@ object SourceResolver {
         // and the seam then landed mid-song rather than near its start. Raced,
         // the same swap happens inside a second.
         val (source, chosen) = bestAcross(
-            rankedAbove(youtube.configId, active).filterNot { it.configId == servedBy },
+            rankedFor(rankedAbove(youtube.configId, active).filterNot { it.configId == servedBy }, skip),
             target,
             request,
             waitForAll = true,
@@ -789,6 +814,25 @@ object SourceResolver {
         active.indexOfFirst { it.configId == configId }
             .let { if (it < 0) active.size else it }
             .let { active.take(it) }
+
+    /**
+     * [sources] with anything refused for this track left out.
+     *
+     * The caller passes the ids rather than this class reading them, because
+     * the record of what refused a track lives in the playback layer
+     * ([StreamChoice][com.music.bitchord.playback.StreamChoice]) and
+     * `data/sources` does not depend on it. Ranking is untouched for everything
+     * else: this only removes sources, never reorders them.
+     */
+    internal fun rankedFor(sources: List<MusicSource>, skip: Set<String>): List<MusicSource> =
+        if (skip.isEmpty()) sources else sources.filterNot { it.configId in skip }
+
+    /** Whether anything ranked above YouTube is still free to serve a track. */
+    internal fun hasUnrefusedModule(skip: Set<String>): Boolean {
+        val active = SourceRegistry.activeForPlayback()
+        val youtube = active.firstOrNull { it.kind == SourceKind.YOUTUBE } ?: return false
+        return rankedFor(rankedAbove(youtube.configId, active), skip).isNotEmpty()
+    }
 
     /**
      * The best stream the configured [sources] can serve for [target] — **all
