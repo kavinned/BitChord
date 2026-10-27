@@ -31,4 +31,38 @@ class AudioCacheReadAheadKeyTest {
     fun `an upgraded rendition keeps its own key`() {
         assertEquals("abc#hifi", AudioCache.videoCacheKey("abc", rendition = "hifi", substituting = true, atmosSuffix = ""))
     }
+
+    @Test
+    fun `a pinned substitute keys on the source that serves it`() {
+        assertEquals(
+            "abc#alt:nebula",
+            AudioCache.videoCacheKey("abc", rendition = null, substituting = true, atmosSuffix = "", sourceId = "nebula"),
+        )
+    }
+
+    @Test
+    fun `a source key keeps the atmos split`() {
+        assertEquals(
+            "abc#alt:nebula-noatmos",
+            AudioCache.videoCacheKey(
+                "abc", rendition = null, substituting = true, atmosSuffix = "-noatmos", sourceId = "nebula",
+            ),
+        )
+    }
+
+    @Test
+    fun `a youtube pin has no source and keeps the plain alt bucket`() {
+        assertEquals(
+            "abc#alt",
+            AudioCache.videoCacheKey("abc", rendition = null, substituting = true, atmosSuffix = "", sourceId = null),
+        )
+    }
+
+    @Test
+    fun `a rendition marker still outranks the source`() {
+        assertEquals(
+            "abc#hifi",
+            AudioCache.videoCacheKey("abc", rendition = "hifi", substituting = true, atmosSuffix = "", sourceId = "nebula"),
+        )
+    }
 }
