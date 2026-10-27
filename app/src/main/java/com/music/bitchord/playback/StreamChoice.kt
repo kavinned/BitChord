@@ -174,6 +174,78 @@ object StreamChoice {
         return false
     }
 
+    private class Refusal(val videoId: String, val sourceId: String, val at: Long, val status: Int)
+
+    /**
+     * Refusals that name the source that answered badly.
+     *
+     * [refusedSubstitutes] cannot express the distinction this exists for: a
+     * module handing over a URL its CDN will not serve says nothing about the
+     * module ranked below it, and treating the two the same is how a dead
+     * Nebula stream took JioSaavn's copy down with it — the whole module race
+     * was skipped and YouTube answered instead. Keyed by track *and* source, so
+     * one track's dead URL never silences another track's source either.
+     */
+    private val refusedSources = ConcurrentHashMap<String, Refusal>()
+
+    /**
+     * Records that [sourceId] refused to serve [videoId].
+     *
+     * @param status the HTTP status the server answered with, or `0` when there
+     *   was no status to have — a source that handed over a URL and then went
+     *   quiet. The status decides how long the refusal stands; see
+     *   [refusalLifetimeMs].
+     */
+    fun refuse(sourceId: String, videoId: String, status: Int) {
+        if (refusedSources.size >= MAX_REMEMBERED) refusedSources.clear()
+        refusedSources[keyOf(sourceId, videoId)] =
+            Refusal(videoId, sourceId, SystemClock.elapsedRealtime(), status)
+    }
+
+    /**
+     * Whether [sourceId] may not serve [videoId] right now.
+     *
+     * A null [sourceId] asks the track-wide question, which is the one the
+     * upgrade path has an answer for: a die on an upgraded URI names no source
+     * [StreamChoice] ever saw.
+     */
+    fun refusedNow(sourceId: String?, videoId: String): Boolean {
+        if (substitutesRefused(videoId)) return true
+        if (sourceId == null) return false
+        val key = keyOf(sourceId, videoId)
+        val refusal = refusedSources[key] ?: return false
+        if (SystemClock.elapsedRealtime() - refusal.at <= refusalLifetimeMs(refusal.status)) return true
+        refusedSources.remove(key)
+        return false
+    }
+
+    /** Every source refused for [videoId] right now, for a resolver to leave out. */
+    fun refusing(videoId: String): Set<String> {
+        val now = SystemClock.elapsedRealtime()
+        refusedSources.entries.removeIf {
+            it.value.videoId == videoId && now - it.value.at > refusalLifetimeMs(it.value.status)
+        }
+        return refusedSources.values.filter { it.videoId == videoId }.mapTo(mutableSetOf()) { it.sourceId }
+    }
+
+    /**
+     * How long a refusal stands. A status is evidence that the URL is dead — the
+     * second lookup mints the same URL — so it is held long enough to keep the
+     * track playing on another source. A source that simply went quiet has said
+     * nothing about itself, and a bad minute there clears up on its own.
+     */
+    internal fun refusalLifetimeMs(status: Int): Long =
+        if (status > 0) REFUSAL_MS else SILENCE_MS
+
+    private fun keyOf(sourceId: String, videoId: String) = "$videoId@$sourceId"
+
+    /** Clears every decision this object holds. For tests, which share one process. */
+    internal fun clearForTest() {
+        chosen.clear()
+        refusedSubstitutes.clear()
+        refusedSources.clear()
+    }
+
     /** Long enough to outlast any one play, far short of any signed URL's life. */
     private const val TTL_MS = 15 * 60 * 1000L
 
@@ -186,6 +258,15 @@ object StreamChoice {
      * returning bad URLs gets another chance inside the same listening session.
      */
     private const val REFUSAL_MS = 10 * 60 * 1000L
+
+    /**
+     * How long a source that handed over a URL and then went quiet is left out.
+     *
+     * Shorter than [REFUSAL_MS] because the evidence is weaker: no status was
+     * ever seen, so this says the source had a bad minute rather than that the
+     * URL is dead. Long enough to outlast the retry it exists to protect.
+     */
+    private const val SILENCE_MS = 2 * 60 * 1000L
 
     private const val MAX_REMEMBERED = 32
 }
