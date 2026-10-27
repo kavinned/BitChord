@@ -441,8 +441,15 @@ object AudioCache {
         rendition: String?,
         substituting: Boolean,
         atmosSuffix: String = atmosKeySuffix(),
+        sourceId: String? = null,
     ): String = when {
         rendition != null -> "$videoId#$rendition"
+        // A pinned substitute names the source that serves it, because two
+        // sources handing over the same song hand over different files. Without
+        // the source in the key, YouTube bytes written while the substitution
+        // lost its race sit in the very entry a later prefetch calls its own —
+        // see the class doc and [phoneKey].
+        sourceId != null -> "$videoId#alt:$sourceId$atmosSuffix"
         substituting -> "$videoId#alt$atmosSuffix"
         else -> videoId
     }
@@ -485,7 +492,12 @@ object AudioCache {
             // still held.
             ?.let { videoId ->
                 val rendition = QualityUpgrade.cacheTag(spec.uri)
-                val key = videoCacheKey(videoId, rendition, SourceResolver.canSubstituteForYouTube())
+                val key = videoCacheKey(
+                    videoId,
+                    rendition,
+                    SourceResolver.canSubstituteForYouTube(),
+                    sourceId = StreamChoice.of(videoId)?.sourceConfigId,
+                )
                 if (rendition != null) key else completeSibling(videoId, key) ?: key
             }
             // A source-backed track keys on the source and its track id alone.
@@ -542,11 +554,15 @@ object AudioCache {
         // Ahead of the connectivity check, which is a binder call: nearly every
         // open is of an entry that already holds something.
         if (cache.getCachedSpans(preferred).isNotEmpty()) return null
-        val siblings = listOf(videoId, "$videoId$ALT_SUFFIX", "$videoId$ALT_SUFFIX-noatmos")
+        // Any other rendition of the same recording. [renditionKeysFor] matches
+        // every `videoId#…` key, so a source-keyed substitute entry is found
+        // here too — needed offline, where a restart has no pin and the
+        // preferred key is the plain id or `#alt`.
+        val offline = isOffline()
+        if (!offline && preferred != videoId) return null
+        return renditionKeysFor(videoId)
             .filter { it != preferred }
-        if (isOffline()) return siblings.firstOrNull(::isComplete)
-        if (preferred != videoId) return null
-        return siblings.firstOrNull { key -> isComplete(key) && isKeptOrigin(key) }
+            .firstOrNull { key -> isComplete(key) && (offline || isKeptOrigin(key)) }
     }
 
     /**
