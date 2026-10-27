@@ -2,6 +2,7 @@ package com.music.bitchord
 
 import com.music.bitchord.playback.AudioCache
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -64,5 +65,19 @@ class AudioCacheReadAheadKeyTest {
             "abc#hifi",
             AudioCache.videoCacheKey("abc", rendition = "hifi", substituting = true, atmosSuffix = "", sourceId = "nebula"),
         )
+    }
+
+    @Test
+    fun `every substitute key counts as an alt rendition`() {
+        assertTrue(AudioCache.isAltRendition("abc#alt"))
+        assertTrue(AudioCache.isAltRendition("abc#alt-noatmos"))
+        assertTrue(AudioCache.isAltRendition("abc#alt:nebula"))
+        assertTrue(AudioCache.isAltRendition("abc#alt:nebula-noatmos"))
+    }
+
+    @Test
+    fun `youtube and upgraded keys are not alt renditions`() {
+        assertFalse(AudioCache.isAltRendition("abc"))
+        assertFalse(AudioCache.isAltRendition("abc#hifi"))
     }
 }
