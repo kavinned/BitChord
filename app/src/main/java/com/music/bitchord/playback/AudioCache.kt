@@ -249,7 +249,7 @@ object AudioCache {
         }
         if (format != CACHE_FORMAT) state.edit().putInt(KEY_CACHE_FORMAT, CACHE_FORMAT).apply()
         if (state.getInt(KEY_MATCHING_SCHEMA, 0) < MATCHING_SCHEMA) {
-            val stale = cache.keys.filter { it.endsWith(ALT_SUFFIX) }
+            val stale = cache.keys.filter(::isAltRendition)
             stale.forEach { runCatching { cache.removeResource(it) } }
             state.edit().putInt(KEY_MATCHING_SCHEMA, MATCHING_SCHEMA).apply()
             TrackLog.d(TAG, "invalidated ${stale.size} source cache entries after matcher upgrade")
@@ -504,6 +504,12 @@ object AudioCache {
         youtubeLength: Long?,
     ): Long? = renditionLength.takeIf { it > 0 }
         ?: if (substituting) null else youtubeLength?.takeIf { it > 0 }
+
+    /**
+     * Whether [key] names a rendition a substitute served: the plain `#alt`
+     * bucket, its Atmos-split twin, or a source-keyed entry.
+     */
+    internal fun isAltRendition(key: String): Boolean = key.contains(ALT_SUFFIX)
 
     /**
      * The total a ranged probe learned: `bytes 0-0/30000000` names the file,

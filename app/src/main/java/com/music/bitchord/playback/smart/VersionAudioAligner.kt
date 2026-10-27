@@ -277,7 +277,7 @@ object VersionAudioAligner {
         val watch = Uri.parse("bitchord://watch?v=${song.videoId}")
         val onDisk = AudioCache.renditionsOf(watch)
         val sameSource = onDisk
-            .filter { !it.key.endsWith("#alt") }
+            .filterNot { AudioCache.isAltRendition(it.key) }
             .maxByOrNull { it.cachedPrefix }
         val pick = if (sameSource != null &&
             sameSource.cachedPrefix >= AudioCache.MIN_ALIGNMENT_PREFIX_BYTES
