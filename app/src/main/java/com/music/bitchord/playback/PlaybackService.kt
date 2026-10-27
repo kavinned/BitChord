@@ -3650,7 +3650,7 @@ class PlaybackService : MediaLibraryService() {
      * There was no policy here at all, which meant
      * [DefaultLoadErrorHandlingPolicy] — three tries at a 1s/2s/3s backoff,
      * against *any* IOException. Stacked on top of this service's own
-     * [MAX_RECOVERIES] counter and read-ahead's independent resolves, that is
+     * [recoveryBudget] and read-ahead's independent resolves, that is
      * where the "infinite loading" came from: the app logged
      * "leaving it alone" after its third attempt, and then Media3 quietly
      * started a fourth on its own schedule — visible in the report as a full
@@ -3728,6 +3728,21 @@ class PlaybackService : MediaLibraryService() {
         }
 
         override fun getTransferListener(): TransferListener = counter
+    }
+
+    /**
+     * How many attempts [mediaId] may spend before the track is left alone.
+     *
+     * Every attempt now names a different source — [recoverFrom] refuses the one
+     * that failed, so the retry resolves to the next one down — which makes
+     * "how many times has this failed" the wrong question. What is left to try
+     * is: one attempt per source not yet refused for this track, plus YouTube.
+     * Capped at [WALK_ATTEMPT_CEILING] so a long source list cannot hold a dead
+     * track in front of the listener for minutes.
+     */
+    private fun recoveryBudget(mediaId: String): Int {
+        val left = SourceResolver.walkBudget(StreamChoice.refusing(mediaId))
+        return left.coerceAtMost(WALK_ATTEMPT_CEILING)
     }
 
     /**
@@ -3835,7 +3850,15 @@ class PlaybackService : MediaLibraryService() {
         // more full walks for an answer already in hand — and in the report they
         // were exactly that, at roughly seventeen youtubei requests each.
         val verdict = permanentReason(error)
-        val givingUp = verdict != null || attempts > MAX_RECOVERIES
+        // One attempt per source is not a repeat of the same failure any more:
+        // recovery now walks *down* the ranking — see [StreamChoice.refuse] —
+        // and each attempt is a different server that has not answered yet. So
+        // the budget is what is still left to walk plus YouTube, capped so a
+        // device with a long list cannot turn one unplayable track into a long
+        // pause. The old fixed budget of two was sized for retrying a single
+        // stream, and against a walk it skipped a track that had a working
+        // YouTube copy waiting behind three bad modules.
+        val givingUp = verdict != null || attempts > recoveryBudget(mediaId)
         // A track that has never made a sound has *failed to start*, whatever
         // the error was, and the queue should move past it once the attempts are
         // spent — see [skipReason]. Read here rather than after the delay below,
@@ -3854,8 +3877,8 @@ class PlaybackService : MediaLibraryService() {
         // must not be offered that same swap again the moment it recovers.
         // Left unrecorded, the second look starts over on the retry, finds the
         // same FLAC at the same dead URL, cuts the audio for it again, and
-        // fails again — twice more before [MAX_RECOVERIES] stops it. Observed
-        // on a Tidal URL answering ERROR_CODE_IO_BAD_HTTP_STATUS.
+        // fails again. Observed on a Tidal URL answering
+        // ERROR_CODE_IO_BAD_HTTP_STATUS.
         //
         // This is also the other half of what [StreamChoice.isSubstitute]
         // cannot see below: a track that started on YouTube and swapped to a
@@ -3884,9 +3907,10 @@ class PlaybackService : MediaLibraryService() {
         // and the retry must not be free to make the same one again. The lookup
         // behind it is deterministic and, by the second attempt, cached — so it
         // wins the race against YouTube by the same margin it won it the first
-        // time and hands back the identical dead URL, until [MAX_RECOVERIES]
-        // stops trying. That is a track that never plays at all while a working
-        // YouTube URL sits in [StreamResolver]'s cache, resolved and unused.
+        // time and hands back the identical dead URL. Refusing the source is
+        // what stops the retry landing there. That is a track that never plays
+        // at all while a working YouTube URL sits in [StreamResolver]'s cache,
+        // resolved and unused.
         // The same reasoning as [QualityUpgrade.refuseUpgrades] above, for the
         // substitution that happens *before* the first note rather than after.
         // Read before the forget below, which is what clears the evidence.
@@ -4004,13 +4028,15 @@ class PlaybackService : MediaLibraryService() {
         val mediaId = item.mediaId
 
         // Refused, not exhausted. When the choice names the source that died and
-        // there is another one ranked above YouTube, the right answer is to walk
-        // to it, not to rebuild the item as YouTube — that rebuild gives up every
+        // anything is ranked above YouTube, the right answer is to walk to it,
+        // not to rebuild the item as YouTube — that rebuild gives up every
         // module's copy of the track. Handing the track back (`false`) lets the
         // ordinary recovery run: it records which source refused, discards the
         // entry and the choice, and prepares again, and the resolver then walks
-        // past the refusal. With nothing ranked above YouTube there is no walk to
-        // make, and the rebuild below is what keeps the track playing.
+        // past the refusal. The guard is deliberately the cheap one — it asks
+        // only whether a walk is possible at all, not whether anything is left
+        // to walk, because everything being refused already lands on YouTube
+        // through the ordinary path.
         val failed = videoId?.let { StreamChoice.of(it)?.sourceConfigId }
         if (failed != null && SourceResolver.canSubstituteForYouTube()) return false
         QualityUpgrade.forget(mediaId)
@@ -9546,8 +9572,14 @@ class PlaybackService : MediaLibraryService() {
          */
         const val DURATION_SETTLE_MS = 8_000L
 
-        /** How many times one track is picked up off the floor — see [recoverFrom]. */
-        const val MAX_RECOVERIES = 2
+        /**
+         * The most attempts one track may spend recovering, whatever the length
+         * of the source list — see [recoveryBudget].
+         *
+         * Four: three sources plus YouTube covers an ordinary configuration, and
+         * a longer list than that has stopped being worth the listener's wait.
+         */
+        const val WALK_ATTEMPT_CEILING = 4
 
         /**
          * How many tracks in a row may be skipped for a plain playback error

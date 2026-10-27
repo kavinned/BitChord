@@ -197,26 +197,19 @@ object StreamChoice {
      *   [refusalLifetimeMs].
      */
     fun refuse(sourceId: String, videoId: String, status: Int) {
-        if (refusedSources.size >= MAX_REMEMBERED) refusedSources.clear()
+        // Evict rather than empty, for the same reason [remember] does: every
+        // entry here is a track that is mid-recovery right now, and clearing
+        // the map frees the retry to ask the source that just refused it for
+        // the identical dead URL — the loop this whole map exists to end.
+        if (refusedSources.size >= MAX_REMEMBERED) {
+            val now = SystemClock.elapsedRealtime()
+            refusedSources.entries.removeIf { now - it.value.at > refusalLifetimeMs(it.value.status) }
+            if (refusedSources.size >= MAX_REMEMBERED) {
+                refusedSources.minByOrNull { it.value.at }?.let { refusedSources.remove(it.key) }
+            }
+        }
         refusedSources[keyOf(sourceId, videoId)] =
             Refusal(videoId, sourceId, SystemClock.elapsedRealtime(), status)
-    }
-
-    /**
-     * Whether [sourceId] may not serve [videoId] right now.
-     *
-     * A null [sourceId] asks the track-wide question, which is the one the
-     * upgrade path has an answer for: a die on an upgraded URI names no source
-     * [StreamChoice] ever saw.
-     */
-    fun refusedNow(sourceId: String?, videoId: String): Boolean {
-        if (substitutesRefused(videoId)) return true
-        if (sourceId == null) return false
-        val key = keyOf(sourceId, videoId)
-        val refusal = refusedSources[key] ?: return false
-        if (SystemClock.elapsedRealtime() - refusal.at <= refusalLifetimeMs(refusal.status)) return true
-        refusedSources.remove(key)
-        return false
     }
 
     /** Every source refused for [videoId] right now, for a resolver to leave out. */
@@ -239,9 +232,8 @@ object StreamChoice {
 
     private fun keyOf(sourceId: String, videoId: String) = "$videoId@$sourceId"
 
-    /** Clears every decision this object holds. For tests, which share one process. */
+    /** Clears the refusals. For tests, which share one process. */
     internal fun clearForTest() {
-        chosen.clear()
         refusedSubstitutes.clear()
         refusedSources.clear()
     }

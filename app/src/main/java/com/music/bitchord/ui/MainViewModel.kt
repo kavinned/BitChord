@@ -2383,6 +2383,10 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                         isExplicit = audio.isExplicit,
                         isVideo = audio.isVideo,
                     ),
+                    // A source that already refused this track is left out: the
+                    // lookup is deterministic, so asking again pins the URL that
+                    // just failed — see [StreamChoice.refuse].
+                    skip = StreamChoice.refusing(audio.videoId),
                 )
                 if (warmed != null) {
                     StreamChoice.remember(audio.videoId, warmed, substituted = true)
