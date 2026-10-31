@@ -224,20 +224,28 @@ internal fun VideoCornerControls(
         verticalAlignment = Alignment.CenterVertically,
     ) {
         VideoQualityBox(onClick = onOpenQuality)
+        // The plate stays 30dp; the target around it is the 48dp a thumb needs
+        // to find over moving video.
         Box(
             modifier = Modifier
-                .size(30.dp)
-                .clip(RoundedCornerShape(8.dp))
-                .background(Color.Black.copy(alpha = 0.38f))
+                .size(48.dp)
                 .clickable(onClick = onToggleFullscreen),
             contentAlignment = Alignment.Center,
         ) {
-            Icon(
-                imageVector = if (fullscreen) Icons.Rounded.FullscreenExit else Icons.Rounded.Fullscreen,
-                contentDescription = null,
-                tint = Color.White,
-                modifier = Modifier.size(22.dp),
-            )
+            Box(
+                modifier = Modifier
+                    .size(30.dp)
+                    .clip(RoundedCornerShape(8.dp))
+                    .background(Color.Black.copy(alpha = 0.38f)),
+                contentAlignment = Alignment.Center,
+            ) {
+                Icon(
+                    imageVector = if (fullscreen) Icons.Rounded.FullscreenExit else Icons.Rounded.Fullscreen,
+                    contentDescription = null,
+                    tint = Color.White,
+                    modifier = Modifier.size(22.dp),
+                )
+            }
         }
     }
 }
@@ -258,27 +266,33 @@ private fun VideoQualityBox(onClick: () -> Unit) {
     val label = quality.selected()?.let(::videoQualityLabel) ?: "Auto"
     Box(
         modifier = Modifier
-            .height(30.dp)
-            .widthIn(min = 44.dp)
-            .clip(RoundedCornerShape(8.dp))
-            .background(Color.Black.copy(alpha = 0.38f))
-            .clickable(onClick = onClick)
-            .padding(horizontal = 8.dp),
+            .height(48.dp)
+            .clickable(onClick = onClick),
         contentAlignment = Alignment.Center,
     ) {
-        AnimatedContent(
-            targetState = label,
-            transitionSpec = { fadeIn(tween(220)) togetherWith fadeOut(tween(220)) },
-            label = "videoQualityLabel",
-        ) { text ->
-            Text(
-                text = text,
-                color = Color.White.copy(alpha = 0.85f),
-                fontSize = 11.sp,
-                fontWeight = FontWeight.Bold,
-                letterSpacing = 0.4.sp,
-                maxLines = 1,
-            )
+        Box(
+            modifier = Modifier
+                .height(30.dp)
+                .widthIn(min = 44.dp)
+                .clip(RoundedCornerShape(8.dp))
+                .background(Color.Black.copy(alpha = 0.38f))
+                .padding(horizontal = 8.dp),
+            contentAlignment = Alignment.Center,
+        ) {
+            AnimatedContent(
+                targetState = label,
+                transitionSpec = { fadeIn(tween(220)) togetherWith fadeOut(tween(220)) },
+                label = "videoQualityLabel",
+            ) { text ->
+                Text(
+                    text = text,
+                    color = Color.White.copy(alpha = 0.85f),
+                    fontSize = 11.sp,
+                    fontWeight = FontWeight.Bold,
+                    letterSpacing = 0.4.sp,
+                    maxLines = 1,
+                )
+            }
         }
     }
 }
