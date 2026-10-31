@@ -72,12 +72,17 @@ class DynamicLruCacheEvictor(
 
     override fun onCacheInitialized() = Unit
 
+    // The cache callbacks are already serialised by the cache's own monitor,
+    // but applyNow runs on a background thread and never takes it, so the sets
+    // need a lock of their own.
+    @Synchronized
     override fun onStartFile(cache: Cache, key: String, position: Long, length: Long) {
         if (length != C.LENGTH_UNSET.toLong()) {
             evictCache(cache, length)
         }
     }
 
+    @Synchronized
     override fun onSpanAdded(cache: Cache, span: CacheSpan) {
         if (isHead(span) && protectedSize + span.length <= headBudgetBytes) {
             protectedHeads.add(span)
@@ -89,6 +94,7 @@ class DynamicLruCacheEvictor(
         evictCache(cache, 0)
     }
 
+    @Synchronized
     override fun onSpanRemoved(cache: Cache, span: CacheSpan) {
         if (protectedHeads.remove(span)) {
             protectedSize -= span.length
@@ -98,6 +104,7 @@ class DynamicLruCacheEvictor(
         currentSize -= span.length
     }
 
+    @Synchronized
     override fun onSpanTouched(cache: Cache, oldSpan: CacheSpan, newSpan: CacheSpan) {
         onSpanRemoved(cache, oldSpan)
         onSpanAdded(cache, newSpan)
@@ -108,8 +115,10 @@ class DynamicLruCacheEvictor(
      * the next write to notice — otherwise a lowered limit only takes effect
      * whenever the listener next happens to play something.
      */
+    @Synchronized
     fun applyNow(cache: Cache) = evictCache(cache, 0)
 
+    @Synchronized
     private fun evictCache(cache: Cache, requiredSpace: Long) {
         while (currentSize + requiredSpace > maxBytes) {
             if (leastRecentlyUsed.isNotEmpty()) {
