@@ -1042,8 +1042,13 @@ private class EmblemCache {
     private var strokeWidth = -1f
     private var strokeStyle = Stroke()
 
-    /** The mood's fixed outline at [size], built by [build] the first time. */
-    fun outline(size: Size, measured: Boolean = false, build: (Path) -> Unit): Path {
+    /**
+     * The mood's fixed outline at [size], built by [build] the first time.
+     *
+     * Inline so the builder is not allocated at every call site on every frame
+     * of the loop, most of which hit the cache and never run it.
+     */
+    inline fun outline(size: Size, measured: Boolean = false, build: (Path) -> Unit): Path {
         if (size != builtFor) {
             outline.reset()
             build(outline)
@@ -1064,6 +1069,35 @@ private class EmblemCache {
         return strokeStyle
     }
 }
+
+/*
+ * Fixed geometry for the moods drawn from a handful of points.
+ *
+ * Hoisted out of the draw block, which runs every MOTION_FRAME_GAP_MS for as
+ * long as the card is on screen: rebuilt there, it was a fresh list — and a
+ * boxed Float per element — on every frame.
+ */
+private val RELAX_STONES = listOf(
+    Triple(0.17f, 0.44f, 0.18f),
+    Triple(0.38f, 0.68f, 0.28f),
+    Triple(0.66f, 0.84f, 0.36f),
+)
+private val AFTER_HOURS_STARS = listOf(
+    Triple(0.80f, 0.22f, 0.07f),
+    Triple(0.86f, 0.58f, 0.05f),
+    Triple(0.68f, 0.82f, 0.04f),
+)
+private val CHILL_ROWS = listOf(0.32f, 0.5f, 0.68f)
+private val STEAM_COLUMNS = listOf(0.36f, 0.5f, 0.64f)
+private val GAMING_SQUARES = listOf(0.9f, 0.62f, 0.34f)
+private val PARTY_CONFETTI = listOf(
+    Triple(0.24f, 0.24f, 0.14f), Triple(0.72f, 0.18f, 0.11f), Triple(0.52f, 0.5f, 0.17f),
+    Triple(0.2f, 0.72f, 0.1f), Triple(0.8f, 0.66f, 0.13f), Triple(0.56f, 0.88f, 0.08f),
+)
+private val SNOWFLAKE_TIPS = listOf(0.22f, 0.34f)
+private val SNOWFLAKE_TURNS = listOf(-0.785f, 0.785f)
+private val RECORD_ARCS = listOf(0.36f, 0.27f)
+private val LOTUS_ANGLES = listOf(-62f, -31f, 0f, 31f, 62f)
 
 private fun DrawScope.drawEmblem(
     mood: TopPickMood,
@@ -1091,12 +1125,7 @@ private fun DrawScope.drawEmblem(
         }
         TopPickMood.RELAX -> {
             // Three stones, balanced and swaying a little out of step.
-            val stones = listOf(
-                Triple(0.17f, 0.44f, 0.18f),
-                Triple(0.38f, 0.68f, 0.28f),
-                Triple(0.66f, 0.84f, 0.36f),
-            )
-            stones.forEachIndexed { index, (cy, width, height) ->
+            RELAX_STONES.forEachIndexed { index, (cy, width, height) ->
                 val sway = wave(phase, index * 0.22f)
                 val center = Offset(f.x(0.5f + 0.015f * sway), f.y(cy))
                 rotate(degrees = 4f * sway, pivot = center) {
@@ -1167,7 +1196,7 @@ private fun DrawScope.drawEmblem(
         }
         TopPickMood.AFTER_HOURS -> {
             drawPath(cache.outline(size) { crescent(it, f, 0.42f, 0.52f, 0.34f) }, color, style = stroke)
-            listOf(Triple(0.80f, 0.22f, 0.07f), Triple(0.86f, 0.58f, 0.05f), Triple(0.68f, 0.82f, 0.04f))
+            AFTER_HOURS_STARS
                 .forEachIndexed { index, (x, y, r) ->
                     val twinkle = 0.25f + 0.75f * (0.5f + 0.5f * wave(phase, index / 3f))
                     sparkle(path, f.at(x, y), side * r)
@@ -1191,7 +1220,7 @@ private fun DrawScope.drawEmblem(
         TopPickMood.CHILL -> {
             // Three waves rolling slowly sideways.
             clipRect(f.left, f.top, f.x(1f), f.y(1f)) {
-                listOf(0.32f, 0.5f, 0.68f).forEachIndexed { row, y ->
+                CHILL_ROWS.forEachIndexed { row, y ->
                     path.reset()
                     for (k in 0..80) {
                         val u = k / 80f
@@ -1220,7 +1249,7 @@ private fun DrawScope.drawEmblem(
             path.arcTo(Rect(f.x(0.12f), f.y(0.25f), f.x(0.88f), f.y(0.95f)), 0f, 180f, true)
             drawPath(path, color, style = stroke)
             drawLine(color, f.at(0.05f, 0.6f), f.at(0.95f, 0.6f), stroke.width, StrokeCap.Round)
-            listOf(0.36f, 0.5f, 0.64f).forEachIndexed { index, x ->
+            STEAM_COLUMNS.forEachIndexed { index, x ->
                 val rise = (phase + index / 3f) % 1f
                 path.reset()
                 for (k in 0..30) {
@@ -1258,7 +1287,7 @@ private fun DrawScope.drawEmblem(
         }
         TopPickMood.GAMING -> {
             // Squares inside squares, turning against each other.
-            listOf(0.9f, 0.62f, 0.34f).forEachIndexed { index, size ->
+            GAMING_SQUARES.forEachIndexed { index, size ->
                 val turn = (if (index % 2 == 0) 1f else -1f) * phase * 90f
                 rotate(turn, f.center) {
                     drawRect(
@@ -1321,10 +1350,7 @@ private fun DrawScope.drawEmblem(
         }
         TopPickMood.PARTY -> {
             // Confetti stars, spinning and popping.
-            listOf(
-                Triple(0.24f, 0.24f, 0.14f), Triple(0.72f, 0.18f, 0.11f), Triple(0.52f, 0.5f, 0.17f),
-                Triple(0.2f, 0.72f, 0.1f), Triple(0.8f, 0.66f, 0.13f), Triple(0.56f, 0.88f, 0.08f),
-            ).forEachIndexed { index, (x, y, r) ->
+            PARTY_CONFETTI.forEachIndexed { index, (x, y, r) ->
                 val pop = 0.85f + 0.15f * wave(phase, index / 6f)
                 val spin = (if (index % 2 == 0) 1f else -1f) * phase * 360f
                 fivePointStar(path, f.at(x, y), side * r)
@@ -1391,9 +1417,9 @@ private fun DrawScope.drawEmblem(
                     val dir = Offset(cos(angle), sin(angle))
                     fun point(d: Float) = Offset(f.center.x + side * d * dir.x, f.center.y + side * d * dir.y)
                     drawLine(color, f.center, point(0.46f), stroke.width, StrokeCap.Round)
-                    listOf(0.22f, 0.34f).forEach { d ->
+                    SNOWFLAKE_TIPS.forEach { d ->
                         val base = point(d)
-                        listOf(-0.785f, 0.785f).forEach { turn ->
+                        SNOWFLAKE_TURNS.forEach { turn ->
                             val a = angle + turn
                             drawLine(color, base, Offset(base.x + side * 0.1f * cos(a), base.y + side * 0.1f * sin(a)), stroke.width, StrokeCap.Round)
                         }
@@ -1407,7 +1433,7 @@ private fun DrawScope.drawEmblem(
             drawCircle(color, radius = side * 0.16f, center = f.center, style = stroke)
             drawCircle(color, radius = side * 0.025f, center = f.center)
             rotate(phase * 360f, f.center) {
-                listOf(0.36f, 0.27f).forEach { r ->
+                RECORD_ARCS.forEach { r ->
                     val box = Rect(f.center, side * r)
                     drawArc(color, 200f, 70f, false, box.topLeft, box.size, style = stroke)
                     drawArc(color, 20f, 70f, false, box.topLeft, box.size, style = stroke)
@@ -1418,7 +1444,7 @@ private fun DrawScope.drawEmblem(
             // A lotus, its petals opening with each breath.
             val open = 0.85f + 0.15f * wave(phase, 0f)
             val base = f.at(0.5f, 0.84f)
-            listOf(-62f, -31f, 0f, 31f, 62f).forEach { angle ->
+            LOTUS_ANGLES.forEach { angle ->
                 rotate(angle * open, base) {
                     path.reset()
                     path.moveTo(base.x, base.y)
