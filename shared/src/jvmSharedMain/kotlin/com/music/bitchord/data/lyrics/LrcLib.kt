@@ -1,6 +1,5 @@
 package com.music.bitchord.data.lyrics
 
-import com.music.bitchord.data.Http
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json
@@ -10,7 +9,6 @@ import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.doubleOrNull
 import kotlinx.serialization.json.jsonPrimitive
 import okhttp3.HttpUrl.Companion.toHttpUrl
-import okhttp3.Request
 import kotlin.math.abs
 
 /**
@@ -25,7 +23,6 @@ import kotlin.math.abs
 object LrcLib {
 
     private const val BASE = "https://lrclib.net/api"
-    private const val AGENT = "BitChord (https://github.com/bitchord)"
 
     private val json = Json { ignoreUnknownKeys = true }
 
@@ -73,13 +70,10 @@ object LrcLib {
             ?.get("syncedLyrics")?.jsonPrimitive?.contentOrNull
     }
 
-    private fun get(url: String): String? {
-        val request = Request.Builder().url(url).header("User-Agent", AGENT).build()
-        Http.client.newCall(request).execute().use { response ->
-            if (!response.isSuccessful) return null
-            return response.body?.string()
-        }
-    }
+    // Through the shared helper like every other provider: it carries the
+    // 6-second call deadline, and a hanging lookup here holds the whole race
+    // behind it while lower-priority sources sit on ready answers.
+    private fun get(url: String): String? = lyricsGet(url)
 
     /**
      * `[mm:ss.xx] words`. Metadata tags carry no timestamp and fall out on
