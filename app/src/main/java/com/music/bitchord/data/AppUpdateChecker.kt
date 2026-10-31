@@ -168,6 +168,9 @@ object AppUpdateChecker {
                                     DownloadState.Downloading((readTotal.toFloat() / it).coerceIn(0f, 1f))
                             }
                         }
+                        check(total == null || readTotal == total) {
+                            "Incomplete download: $readTotal of $total bytes"
+                        }
                     }
                 }
             }
