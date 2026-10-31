@@ -7,6 +7,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.launch
+import com.music.bitchord.data.trimToLimit
 import java.util.concurrent.ConcurrentHashMap
 import kotlin.math.min
 
@@ -124,8 +125,8 @@ object ListeningRecorder {
      * which is most listening — would be exactly the listening that went
      * uncredited.
      *
-     * One request per track, kept for the life of the process, and the answer is
-     * cached a second time by the repository itself.
+     * One request per track, capped so it stops growing with every track ever
+     * played; a dropped one is asked about again on its next play.
      */
     private val extras = ConcurrentHashMap<String, Song>()
 
@@ -156,9 +157,11 @@ object ListeningRecorder {
         // and asking would be a failed request per play, forever.
         if (song.localUri != null || song.videoId.length != YOUTUBE_ID_LENGTH) return song
         if (asked.add(song.videoId)) {
+            asked.trimToLimit(MAX_REMEMBERED_TRACKS)
             scope.launch {
                 YtMusicRepository.trackLinks(song.videoId).getOrNull()?.let {
                     extras[song.videoId] = it
+                    extras.trimToLimit(MAX_REMEMBERED_TRACKS)
                 }
             }
         }
@@ -173,6 +176,7 @@ object ListeningRecorder {
      * full, while the unbounded gap across a pause is not.
      */
     private const val MAX_STEP_MS = 8_000L
+    private const val MAX_REMEMBERED_TRACKS = 512
 
     /** Under half a minute is not a listen, however it ended. */
     private const val PLAY_FLOOR_MS = 30_000L

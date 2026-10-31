@@ -3,6 +3,7 @@ package com.music.bitchord.data.remote
 import android.content.Context
 import android.net.Uri
 import com.music.bitchord.data.model.Song
+import com.music.bitchord.data.trimToLimit
 import java.io.File
 import java.security.MessageDigest
 import java.util.concurrent.ConcurrentHashMap
@@ -30,6 +31,7 @@ import kotlinx.coroutines.withContext
 object RemoteArtworkStore {
 
     private const val MAX_DIR_BYTES = 100L * 1024 * 1024
+    private const val MAX_MEMORY_ENTRIES = 512
 
     private val memory = ConcurrentHashMap<String, String>()
     private val inFlight = ConcurrentHashMap<String, CompletableDeferred<String?>>()
@@ -46,7 +48,7 @@ object RemoteArtworkStore {
         memory[key]?.let { return it }
         val appContext = context.applicationContext
         diskHit(appContext, key)?.let {
-            memory[key] = it
+            remember(key, it)
             return it
         }
         val job = inFlightLock.withLock {
@@ -65,7 +67,17 @@ object RemoteArtworkStore {
                 }
             }
         }
-        return runCatching { job.await() }.getOrNull()?.also { memory[key] = it }
+        return runCatching { job.await() }.getOrNull()?.also { remember(key, it) }
+    }
+
+    /**
+     * Puts [uri] in front of the next ask. Capped, unlike the disk directory,
+     * which had a limit from the start: this one grew with everything ever
+     * scrolled past, and a dropped entry is re-read from disk in one call.
+     */
+    private fun remember(key: String, uri: String) {
+        memory[key] = uri
+        memory.trimToLimit(MAX_MEMORY_ENTRIES)
     }
 
     private suspend fun extractAndStore(context: Context, song: Song, key: String): String? =
