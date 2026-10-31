@@ -51,17 +51,21 @@ class LoopMixPort {
     @Volatile var generation: Int = 0
         private set
 
+    // Generation first, arm second: the audio thread reads generation before
+    // the arms and only then decides whether its cached state is current. Arm
+    // first let it read the new arm under the old generation and keep stale
+    // loop state for a buffer.
     fun armOutgoing(arm: OutArm) {
         inArm = null
-        outArm = arm
         generation++
+        outArm = arm
     }
 
     fun armIncoming(arm: InArm) {
         outArm = null
-        inArm = arm
         pendingShift.set(0)
         generation++
+        inArm = arm
     }
 
     fun disarm() {
