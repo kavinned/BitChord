@@ -1,6 +1,7 @@
 package com.music.bitchord.data.canvas
 
 import com.music.bitchord.data.Http
+import com.music.bitchord.data.boundedString
 import okhttp3.Request
 
 /**
@@ -17,7 +18,7 @@ internal fun canvasGet(url: String, headers: Map<String, String> = emptyMap()): 
     }.build()
     return runCatching {
         Http.client.newCall(request).execute().use { response ->
-            if (response.isSuccessful) response.body?.string() else null
+            if (response.isSuccessful) response.body?.boundedString(CANVAS_MAX_BODY_BYTES) else null
         }
     }.getOrNull()
 }
@@ -33,10 +34,13 @@ internal fun canvasGetWithStatus(url: String, headers: Map<String, String> = emp
     }.build()
     return runCatching {
         Http.client.newCall(request).execute().use { response ->
-            response.code to if (response.isSuccessful) response.body?.string() else null
+            response.code to if (response.isSuccessful) response.body?.boundedString(CANVAS_MAX_BODY_BYTES) else null
         }
     }.getOrDefault(-1 to null)
 }
+
+/** A canvas lookup is a small metadata document; a few hundred KB is already huge. */
+private const val CANVAS_MAX_BODY_BYTES = 512L * 1024
 
 /** The browser UA these catalog endpoints expect; they 403 an unknown one. */
 internal const val CANVAS_UA =

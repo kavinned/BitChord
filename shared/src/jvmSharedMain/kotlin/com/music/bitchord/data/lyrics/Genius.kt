@@ -1,6 +1,7 @@
 package com.music.bitchord.data.lyrics
 
 import com.music.bitchord.data.Http
+import com.music.bitchord.data.boundedString
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json
@@ -332,7 +333,7 @@ object Genius {
             .header("Accept-Language", "en-US,en;q=0.9")
             .build()
         httpClient.newCall(request).execute().use { response ->
-            if (response.isSuccessful) response.body?.string() else null
+            if (response.isSuccessful) response.body?.boundedString() else null
         }
     }.getOrNull()
 
