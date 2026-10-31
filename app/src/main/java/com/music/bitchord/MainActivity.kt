@@ -98,6 +98,7 @@ import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.saveable.rememberSaveableStateHolder
 import androidx.compose.runtime.setValue
@@ -2900,8 +2901,13 @@ private fun BitChordApp(
                     // exit drawing whatever is underneath instead of itself.
                     // Per slot, since each is remembered against its own key.
                     val held = remember(key) { mutableStateOf(live) }
-                    if (live != null) held.value = live
-                    val page = held.value
+                    // Read the live page first, so a page that has just arrived
+                    // never spends a frame drawing the stale entry.
+                    val page = live ?: held.value
+                    // Written after composition rather than during it: the last
+                    // live page is still kept for the fade-out, without
+                    // invalidating this page mid-transition on every change.
+                    SideEffect { if (live != null) held.value = live }
                     // This state belongs to this AnimatedContent slot, not to
                     // whichever detail happens to be at the top of the stack
                     // while the slot is fading out.
