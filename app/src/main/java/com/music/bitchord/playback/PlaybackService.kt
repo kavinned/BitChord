@@ -8183,6 +8183,9 @@ class PlaybackService : MediaLibraryService() {
         castPlayback.release()
         closeAudioEffectSession()
         bluetoothTracker.stop()
+        // The attach callback is process-wide and captured this service: left
+        // in place it keeps the dead service and both players reachable.
+        UsbDirectDevices.onChanged = null
         audioManager?.unregisterAudioDeviceCallback(outputDeviceCallback)
         partySync?.stop()
         partySync = null
