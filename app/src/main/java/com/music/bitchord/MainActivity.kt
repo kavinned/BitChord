@@ -996,14 +996,19 @@ private fun BitChordApp(
     // Playlists imported without (or instead of) a YouTube Music account live
     // in the app's own store, and sit on the same shelf as the downloaded ones.
     val localPlaylists by com.music.bitchord.data.spotify.LocalPlaylistStore.playlists.collectAsStateWithLifecycle()
-    val localPlaylistItems = localPlaylists.map { playlist ->
-        ShelfItem(
-            title = playlist.title,
-            subtitle = stringResource(R.string.local_playlist_subtitle, playlist.songs.size),
-            thumbnailUrl = playlist.songs.firstOrNull { !it.thumbnailUrl.isNullOrBlank() }?.thumbnailUrl,
-            videoId = null,
-            browseId = playlist.browseId,
-        )
+    // Only the Library tab reads these, but they were rebuilt on every root
+    // recomposition — which the bar's own slide makes frequent. Resolved off
+    // composition so the list can be remembered against the playlists.
+    val localPlaylistItems = remember(localPlaylists, context) {
+        localPlaylists.map { playlist ->
+            ShelfItem(
+                title = playlist.title,
+                subtitle = context.getString(R.string.local_playlist_subtitle, playlist.songs.size),
+                thumbnailUrl = playlist.songs.firstOrNull { !it.thumbnailUrl.isNullOrBlank() }?.thumbnailUrl,
+                videoId = null,
+                browseId = playlist.browseId,
+            )
+        }
     }
     // What a browse id is recorded under in Downloads.collections, when it names
     // a release downloaded whole — see BrowseTarget.downloadId. A downloaded
