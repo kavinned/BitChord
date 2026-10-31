@@ -244,7 +244,13 @@ public:
 
     void events() {
         timeval timeout{0, 1000};
-        check(libusb_handle_events_timeout(context, &timeout));
+        int code;
+        // A signal can interrupt the wait; libusb asks to be called again
+        // rather than be told the stream is broken.
+        do {
+            code = libusb_handle_events_timeout(context, &timeout);
+        } while (code == LIBUSB_ERROR_INTERRUPTED);
+        check(code);
     }
 
     // Cancellation is asynchronous: keep every buffer and the context alive
