@@ -9353,18 +9353,25 @@ class PlaybackService : MediaLibraryService() {
             mediaSession: MediaSession,
             controller: MediaSession.ControllerInfo,
         ): ListenableFuture<MediaSession.MediaItemsWithStartPosition> = scope.future(Dispatchers.IO) {
-            // 1. If player currently holds items in its queue, resume from it
-            val activePlayer = player
-            if (activePlayer != null && activePlayer.mediaItemCount > 0) {
-                val currentItems = (0 until activePlayer.mediaItemCount).map { activePlayer.getMediaItemAt(it) }
-                val startIndex = activePlayer.currentMediaItemIndex.coerceIn(0, currentItems.size - 1)
-                val startPositionMs = activePlayer.currentPosition.coerceAtLeast(0L)
-                return@future MediaSession.MediaItemsWithStartPosition(
-                    ImmutableList.copyOf(currentItems),
-                    startIndex,
-                    startPositionMs,
-                )
+            // 1. If player currently holds items in its queue, resume from it.
+            // ExoPlayer is confined to the main thread and checks it on several
+            // of these reads, so the player half runs there; only the fallbacks
+            // below are slow enough to want the IO dispatcher.
+            val queued = withContext(Dispatchers.Main) {
+                val activePlayer = player
+                if (activePlayer == null || activePlayer.mediaItemCount == 0) {
+                    null
+                } else {
+                    MediaSession.MediaItemsWithStartPosition(
+                        ImmutableList.copyOf(
+                            (0 until activePlayer.mediaItemCount).map { activePlayer.getMediaItemAt(it) },
+                        ),
+                        activePlayer.currentMediaItemIndex.coerceIn(0, activePlayer.mediaItemCount - 1),
+                        activePlayer.currentPosition.coerceAtLeast(0L),
+                    )
+                }
             }
+            if (queued != null) return@future queued
 
             // 2. Fallback to local downloaded songs (offline-ready). Capped, as is
             // the device library below: this answers a headset's play button
