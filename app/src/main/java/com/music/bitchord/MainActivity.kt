@@ -5788,6 +5788,9 @@ private fun BitChordApp(
         }
 
         if (confirmJioSaavn) {
+            // The alert is a plain box, not a dialog, so it registers nothing
+            // itself: without this, Back walks the page out from under it.
+            BackHandler { confirmJioSaavn = false }
             ConfirmationAlert(
                 hazeState = hazeState,
                 title = stringResource(R.string.enable_jiosaavn),
