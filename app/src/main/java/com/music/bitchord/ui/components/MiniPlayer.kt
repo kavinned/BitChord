@@ -48,7 +48,6 @@ import androidx.compose.ui.input.pointer.util.VelocityTracker
 import androidx.compose.ui.input.pointer.util.addPointerInputChange
 import androidx.compose.ui.layout.LayoutCoordinates
 import androidx.compose.ui.layout.onPlaced
-import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -63,6 +62,10 @@ import com.music.bitchord.ui.components.thumbnailBorder
 import com.music.bitchord.ui.haptics.Haptic
 import com.music.bitchord.ui.haptics.rememberHaptics
 import com.music.bitchord.ui.player.PlayerDock
+import com.music.bitchord.ui.player.AndroidMusicVideo
+import androidx.compose.ui.layout.ContentScale
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.animation.core.animateDpAsState
 import dev.chrisbanes.haze.HazeState
 import dev.chrisbanes.haze.materials.ExperimentalHazeMaterialsApi
 import dev.chrisbanes.haze.materials.HazeMaterials
@@ -106,9 +109,12 @@ private val SPINNER_SIZE = 22.dp
  */
 private val TRANSPORT_GAP = 8.dp
 
+/** The cover's side; with the bar's vertical padding it sets the bar's height. */
+private val ROW_ART_SIZE = 40.dp
+
 /**
- * Vertical padding, which with the 40dp artwork sets the bar's height at 56dp
- * and so its pill radius at 28.
+ * Vertical padding, which with the [ROW_ART_SIZE] artwork sets the bar's height
+ * at 56dp and so its pill radius at 28.
  */
 private val ROW_PADDING_VERTICAL = 8.dp
 
@@ -135,25 +141,25 @@ private val ROW_PADDING_HORIZONTAL = 12.dp
 private val ART_CORNER = 8.dp
 
 /**
- * The artwork's shape in the miniplayer.
- *
- * When [rounded] is true, the outer corners (top-start and bottom-start) are curved
- * with a 20dp radius to match the concentric roundness of the 56dp outer pill
- * (28dp pill radius - 8dp vertical padding = 20dp, exactly half the 40dp artwork height),
- * while top-end and bottom-end remain flat (0dp) facing the track title.
- * When [rounded] is false, all four corners retain the standard [ART_CORNER] (8dp).
+ * The artwork's corner when rounded, concentric with the bar's pill: the pill's
+ * radius (half the bar's height) less the row's side padding, so the artwork's
+ * left curve runs parallel to the bar's instead of cutting inside it.
  */
-internal fun miniPlayerArtShape(rounded: Boolean): RoundedCornerShape =
-    if (rounded) {
-        RoundedCornerShape(
-            topStart = 20.dp,
-            bottomStart = 20.dp,
-            topEnd = 0.dp,
-            bottomEnd = 0.dp,
-        )
-    } else {
-        RoundedCornerShape(ART_CORNER)
-    }
+private val ROUNDED_ART_CORNER =
+    ROW_ART_SIZE / 2 + ROW_PADDING_VERTICAL - ROW_PADDING_HORIZONTAL
+
+/**
+ * The artwork's shape in the miniplayer: the outer corners (top-start and
+ * bottom-start) curved by [radius], top-end and bottom-end flat (0dp) facing
+ * the track title. Callers pass [ROUNDED_ART_CORNER] for this bar.
+ */
+internal fun miniPlayerArtShape(radius: Dp): RoundedCornerShape =
+    RoundedCornerShape(
+        topStart = radius,
+        bottomStart = radius,
+        topEnd = 0.dp,
+        bottomEnd = 0.dp,
+    )
 
 /** Distance that makes a horizontal drag an intentional track change. */
 private val TRACK_SWIPE_THRESHOLD = 72.dp
@@ -359,6 +365,9 @@ internal fun Modifier.playerDockArt(dock: PlayerDock?, corner: Dp): Modifier {
         .graphicsLayer { alpha = if (dock.coversMiniArt) 0f else 1f }
 }
 
+/** The mini player's cover for a music video: 16:9 at the cover's 40dp height. */
+private val VIDEO_ART_WIDTH = 71.dp
+
 /** Frosted mini player that rides just above the floating tab bar. */
 @OptIn(ExperimentalHazeMaterialsApi::class)
 @Composable
@@ -383,8 +392,12 @@ fun MiniPlayer(
     val reduceDynamicBlur by AppSettings.reduceDynamicBlur.collectAsStateWithLifecycle()
     val roundMiniPlayerArtwork by AppSettings.roundMiniPlayerArtwork.collectAsStateWithLifecycle()
     val haptics = rememberHaptics()
-    val artShape = miniPlayerArtShape(roundMiniPlayerArtwork)
-    val dockCorner = if (roundMiniPlayerArtwork) 20.dp else ART_CORNER
+    val artShape = if (roundMiniPlayerArtwork) {
+        miniPlayerArtShape(ROUNDED_ART_CORNER)
+    } else {
+        RoundedCornerShape(ART_CORNER)
+    }
+    val dockCorner = if (roundMiniPlayerArtwork) ROUNDED_ART_CORNER else ART_CORNER
     // percent rather than a dp figure, so the corner stays exactly half the
     // height if the row's contents ever change it — which is what keeps a pill
     // a pill instead of a rounded rectangle. Same idiom as [FloatingBottomBar]
@@ -433,29 +446,54 @@ fun MiniPlayer(
                 ),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            AsyncImage(
-                model = rememberRemoteArtworkUrl(song)?.artworkAt(ROW_ART_PX),
-                contentDescription = null,
+            // A music video plays here at its own 16:9, as the web player's
+            // mini player does, rather than cropped into the square cover.
+            val artWidth by animateDpAsState(
+                targetValue = if (song.isVideo) VIDEO_ART_WIDTH else 40.dp,
+                label = "miniArtWidth",
+            )
+            Box(
                 modifier = Modifier
-                    .size(40.dp)
+                    .size(width = artWidth, height = ROW_ART_SIZE)
                     .playerDockArt(dock, dockCorner)
                     .clip(artShape)
                     .thumbnailBorder(artShape)
                     .background(MaterialTheme.colorScheme.surfaceVariant),
-            )
+            ) {
+                AsyncImage(
+                    model = rememberRemoteArtworkUrl(song)?.artworkAt(ROW_ART_PX),
+                    contentDescription = null,
+                    contentScale = ContentScale.Crop,
+                    modifier = Modifier.fillMaxSize(),
+                )
+                // A music video keeps playing in the cover's place, cropped to
+                // it, as the web player's mini player does — the full player,
+                // when it is up, takes the picture over.
+                if (song.isVideo) {
+                    AndroidMusicVideo(
+                        videoId = song.videoId,
+                        fit = false,
+                        onRenderedChanged = {},
+                        modifier = Modifier.fillMaxSize(),
+                        priority = 0,
+                    )
+                }
+            }
             Spacer(Modifier.width(10.dp))
             Column(Modifier.weight(1f)) {
+                // The badge in the artist line's colour and a long line faded
+                // out at its end, as on the glass bar's mini player.
                 ExplicitSongTitle(
                     song = song,
                     style = MaterialTheme.typography.titleMedium,
                     color = MaterialTheme.colorScheme.onBackground,
+                    badgeColor = MaterialTheme.colorScheme.onSurfaceVariant,
+                    fadeOverflow = true,
                 )
-                Text(
+                FadingLine(
                     text = song.artist,
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
                 )
             }
             if (isLoading) {
