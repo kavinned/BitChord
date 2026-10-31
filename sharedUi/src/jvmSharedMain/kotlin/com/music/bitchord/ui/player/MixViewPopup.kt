@@ -27,6 +27,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
@@ -194,12 +195,12 @@ internal fun MixViewPopup(
                                 .background(PopupColor.copy(alpha = 0.94f))
                         },
                     )
-                    // Taps on the card are the card's, not the scrim's.
-                    .clickable(
-                        indication = null,
-                        interactionSource = remember { MutableInteractionSource() },
-                        onClick = {},
-                    )
+                    // Taps on the card are the card's, not the scrim's. Swallowed
+                    // by a pointer handler rather than an empty clickable, which
+                    // merges every child into one semantics node whose action
+                    // does nothing — TalkBack then reads the popup as one dead
+                    // button and the deck headers cannot be reached.
+                    .pointerInput(Unit) { detectTapGestures { } }
                     .padding(vertical = 14.dp),
                 horizontalAlignment = Alignment.CenterHorizontally,
             ) {
