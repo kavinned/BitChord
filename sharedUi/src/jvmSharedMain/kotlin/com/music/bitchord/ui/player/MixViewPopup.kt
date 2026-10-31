@@ -60,6 +60,7 @@ import androidx.compose.ui.graphics.drawscope.clipRect
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
@@ -163,6 +164,10 @@ internal fun MixViewPopup(
                         .clickable(
                             indication = null,
                             interactionSource = remember { MutableInteractionSource() },
+                            // The scrim is the only way out of the popup besides
+                            // system Back, so it needs to announce itself.
+                            onClickLabel = stringResource(Res.string.close),
+                            role = Role.Button,
                             onClick = onDismiss,
                         )
                 } else {
