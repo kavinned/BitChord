@@ -233,7 +233,7 @@ object OfflinePlaylists {
                         .put("songs", songs),
                 )
             }
-            prefs.edit().putString(KEY_PLAYLISTS, array.toString()).apply()
+            prefs.edit().putString(KEY_PLAYLISTS, array.toString()).commit()
         }.onFailure { DebugLog.w("BitChord", "Offline playlists not saved: ${it.message}") }
     }
 
