@@ -577,6 +577,9 @@ internal fun AndroidMusicVideo(
     // only while it plays, and only on the surface its frames are reaching.
     val awake = rendered && playing
     LaunchedEffect(view, awake) { view?.keepScreenOn = awake }
+    // Dismissed while the picture was up: the effect above is cancelled with
+    // the flag still set, and nothing else recomputes it.
+    DisposableEffect(view) { onDispose { view?.keepScreenOn = false } }
 
     val report by rememberUpdatedState(onRenderedChanged)
     LaunchedEffect(rendered) { report(rendered) }
