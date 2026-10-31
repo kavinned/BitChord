@@ -203,20 +203,34 @@ object OfflinePlaylists {
 
     private fun load(): List<OfflinePlaylist> {
         val raw = prefs.getString(KEY_PLAYLISTS, null) ?: return emptyList()
-        return runCatching {
-            val array = JSONArray(raw)
-            (0 until array.length()).map { i ->
+        return runCatching { parse(raw) }.getOrElse {
+            DebugLog.w("BitChord", "Offline playlists unreadable: ${it.message}")
+            emptyList()
+        }
+    }
+
+    /**
+     * Parsed record by record. One unreadable playlist — a field of the wrong
+     * type, say — used to fail the whole array, and the empty result was then
+     * written back over the stored file on the next edit, taking every playlist
+     * and every like with it.
+     */
+    internal fun parse(raw: String): List<OfflinePlaylist> {
+        val array = JSONArray(raw)
+        return (0 until array.length()).mapNotNull { i ->
+            runCatching {
                 val obj = array.getJSONObject(i)
                 val songs = obj.getJSONArray("songs")
                 OfflinePlaylist(
                     id = obj.getString("id"),
                     title = obj.optString("title"),
-                    songs = (0 until songs.length()).mapNotNull { songFrom(songs.getJSONObject(it)) },
+                    songs = (0 until songs.length()).mapNotNull { s ->
+                        runCatching { songFrom(songs.getJSONObject(s)) }.getOrNull()
+                    },
                 )
-            }
-        }.getOrElse {
-            DebugLog.w("BitChord", "Offline playlists unreadable: ${it.message}")
-            emptyList()
+            }.onFailure {
+                DebugLog.w("BitChord", "Offline playlist $i unreadable: ${it.message}")
+            }.getOrNull()
         }
     }
 
