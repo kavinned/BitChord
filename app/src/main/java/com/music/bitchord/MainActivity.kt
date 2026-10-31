@@ -841,8 +841,11 @@ private fun BitChordApp(
      */
     val updateNotice = updateAvailable
 
-    LaunchedEffect(updateNotice) {
-        if (updateNotice != null && !updateDialogShown) {
+    // Keyed on the welcome as well: the flag is once per launch, so spending it
+    // while onboarding still covers the screen — or letting a Back press during
+    // onboarding close a dialog that was never drawn — lost it for the session.
+    LaunchedEffect(updateNotice, onboardingComplete) {
+        if (updateNotice != null && !updateDialogShown && onboardingComplete) {
             updateDialogShown = true
             showUpdateDialog = true
         }
@@ -2781,7 +2784,7 @@ private fun BitChordApp(
         val replayDrawable = replay.summary?.isEmpty == false
         BackHandler(enabled = replayDrawable && replayStory != null && !showReplayShare) { replayStory = null }
         BackHandler(enabled = replayDrawable && showReplayShare) { showReplayShare = false }
-        BackHandler(enabled = showUpdateDialog) { showUpdateDialog = false }
+        BackHandler(enabled = showUpdateDialog && onboardingComplete) { showUpdateDialog = false }
         BackHandler(enabled = showListenBrainzLogin) { showListenBrainzLogin = false }
         BackHandler(enabled = showLastfmLogin) { showLastfmLogin = false }
         BackHandler(enabled = discordDialog != null) { discordDialog = null }
