@@ -94,9 +94,14 @@ class LoopMixSession private constructor(
         alignedErrorMs = errorSeconds * 1000
     }
 
+    /**
+     * Safe on a session that never reached [attach]: the caller closing a
+     * cancelled build has no ports to disarm, and reaching for one used to
+     * throw on the main dispatcher and kill the process.
+     */
     fun close() {
-        outPort.disarm()
-        inPort.disarm()
+        if (this::outPort.isInitialized) outPort.disarm()
+        if (this::inPort.isInitialized) inPort.disarm()
         renderer.close()
     }
 
