@@ -109,7 +109,9 @@ class AndroidPlayerHost(context: Context) : PlayerHost {
 
     @Composable
     override fun MusicVideo(videoId: String, fit: Boolean, onRenderedChanged: (Boolean) -> Unit, modifier: Modifier) =
-        AndroidMusicVideo(videoId, fit, onRenderedChanged, modifier)
+        // 2: the full player outranks the mini player and the glass bar, which
+        // is what the engine's selection rule promises and nothing enforced.
+        AndroidMusicVideo(videoId, fit, onRenderedChanged, modifier, priority = 2)
 
     override val musicVideoAspect: StateFlow<Float> get() = MusicVideoEngine.aspect
 
