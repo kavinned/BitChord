@@ -9,7 +9,6 @@ import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.snap
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Canvas
-import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.Immutable
@@ -129,10 +128,13 @@ fun MeshGradientBackground(
     // Each colour slot crossfades independently when the track (palette) changes,
     // unless "reduce animation" is on, in which case colours snap straight to target.
     val colorSpec: AnimationSpec<Color> = if (reduceAnimation || !animated) snap() else tween(colorFadeMillis)
+    // Held as State and read inside the draw lambda below. Read here they
+    // recomposed the whole gradient on every frame of a crossfade — and Home
+    // steps through its palettes, so on that screen the crossfade never ends.
     val animatedColors = tuned.mapIndexed { index, color ->
-        animateColorAsState(color, colorSpec, label = "meshColor$index").value
+        animateColorAsState(color, colorSpec, label = "meshColor$index")
     }
-    val baseColor by animateColorAsState(tuned.first().dimmed(), colorSpec, label = "meshBase")
+    val baseColor = animateColorAsState(tuned.first().dimmed(), colorSpec, label = "meshBase")
 
     // Read in the draw lambda, not here: an Animatable read during draw
     // invalidates only the drawing, leaving composition out of the loop.
@@ -180,25 +182,22 @@ fun MeshGradientBackground(
                 scaleX = 1.3f
                 scaleY = 1.3f
             }
-            .background(baseColor)
             .blur(blurRadius),
     ) {
-        val anchors = listOf(
-            Offset(0.20f, 0.25f),
-            Offset(0.80f, 0.20f),
-            Offset(0.75f, 0.80f),
-            Offset(0.25f, 0.75f),
-        )
-        val speeds = listOf(1f, -0.7f, 0.85f, -1.15f)
+        // The base wash used to be `.background(baseColor)` on the modifier,
+        // which read the animation in composition. It is the same rectangle,
+        // drawn one phase later.
+        drawRect(color = baseColor.value)
         val drift = phase.value
 
         animatedColors.forEachIndexed { index, color ->
-            val anchor = anchors[index]
+            val anchor = MESH_ANCHORS[index]
             val center = Offset(
-                x = (anchor.x + 0.16f * cos(drift * speeds[index] + index * 1.7f)) * size.width,
-                y = (anchor.y + 0.16f * sin(drift * speeds[index] * 0.9f + index * 2.3f)) * size.height,
+                x = (anchor.x + 0.16f * cos(drift * MESH_SPEEDS[index] + index * 1.7f)) * size.width,
+                y = (anchor.y + 0.16f * sin(drift * MESH_SPEEDS[index] * 0.9f + index * 2.3f)) * size.height,
             )
             val radius = size.maxDimension * 0.62f
+            val blob = color.value
             drawCircle(
                 // Along smootherstep rather than a straight falloff: a straight one
                 // stops dead at the rim, and that corner showed as a ring where each
@@ -206,7 +205,7 @@ fun MeshGradientBackground(
                 brush = Brush.radialGradient(
                     colorStops = Array(FADE_CURVE_STOPS + 1) { i ->
                         val t = i / FADE_CURVE_STOPS.toFloat()
-                        t to color.copy(alpha = BLOB_ALPHA * (1f - smootherStep(t)))
+                        t to blob.copy(alpha = BLOB_ALPHA * (1f - smootherStep(t)))
                     },
                     center = center,
                     radius = radius,
@@ -230,6 +229,17 @@ fun MeshGradientBackground(
 
 /** A blob's opacity at its centre. */
 private const val BLOB_ALPHA = 0.85f
+
+/** Where the four blobs sit before their own drift, as a share of the surface. */
+private val MESH_ANCHORS = listOf(
+    Offset(0.20f, 0.25f),
+    Offset(0.80f, 0.20f),
+    Offset(0.75f, 0.80f),
+    Offset(0.25f, 0.75f),
+)
+
+/** How fast each blob drifts, and which way: irrational multiples, so it never repeats. */
+private val MESH_SPEEDS = listOf(1f, -0.7f, 0.85f, -1.15f)
 
 /**
  * How long each palette in a [cyclingMeshPalette] is held, which is also how
