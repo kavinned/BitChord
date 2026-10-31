@@ -21,6 +21,7 @@ import androidx.compose.ui.layout.layout
 import androidx.compose.ui.unit.Constraints
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.media3.common.AudioAttributes
 import androidx.media3.common.C
 import androidx.media3.common.MediaItem
 import androidx.media3.common.PlaybackException
@@ -299,8 +300,13 @@ object MusicVideoEngine {
     }
 
     private fun ensurePlayer(context: Context): ExoPlayer = player ?: ExoPlayer.Builder(context)
+        .setHandleAudioBecomingNoisy(false)
         .build()
         .apply {
+            // The music owns audio focus; this picture is its clock. Built with
+            // defaults it requested focus too, and Media3 then paused the song
+            // that was telling this video where to be.
+            setAudioAttributes(AudioAttributes.DEFAULT, /* handleAudioFocus = */ false)
             volume = 0f
             trackSelectionParameters = trackSelectionParameters.buildUpon()
                 .setTrackTypeDisabled(C.TRACK_TYPE_AUDIO, true)
