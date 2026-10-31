@@ -461,8 +461,12 @@ class BluetoothAudioTracker(private val context: Context) {
             else -> if (type > 6) "Vendor Codec ($type)" else "Unknown"
         }
 
+        /** A config may name the rate outright instead of setting a bitmask bit. */
+        private val DIRECT_SAMPLE_RATES = setOf(44100, 48000, 88200, 96000, 176400, 192000)
+        private val DIRECT_BIT_DEPTHS = setOf(16, 24, 32)
+
         fun mapSampleRate(mask: Int): Int? = when {
-            mask in setOf(44100, 48000, 88200, 96000, 176400, 192000) -> mask
+            mask in DIRECT_SAMPLE_RATES -> mask
             mask <= 0 || mask > 63 -> null
             (mask and (1 shl 5)) != 0 -> 192000
             (mask and (1 shl 4)) != 0 -> 176400
@@ -474,7 +478,7 @@ class BluetoothAudioTracker(private val context: Context) {
         }
 
         fun mapBitDepth(mask: Int): Int? = when {
-            mask in setOf(16, 24, 32) -> mask
+            mask in DIRECT_BIT_DEPTHS -> mask
             mask <= 0 || mask > 7 -> null
             (mask and (1 shl 2)) != 0 -> 32
             (mask and (1 shl 1)) != 0 -> 24
