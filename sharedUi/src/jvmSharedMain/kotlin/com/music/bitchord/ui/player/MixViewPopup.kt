@@ -475,7 +475,9 @@ private fun rememberWaveColors(artworkUrl: String?): WaveColors {
     }
     LaunchedEffect(artworkUrl) {
         val url = artworkUrl ?: return@LaunchedEffect
-        if (WaveColorCache[url] != null) return@LaunchedEffect
+        // Filled by the other deck on the same cover after this one remembered
+        // its default: apply it rather than returning on its existence.
+        WaveColorCache[url]?.let { target = it; return@LaunchedEffect }
         val request = ImageRequest.Builder(context)
             .data(url)
             .size(128)
