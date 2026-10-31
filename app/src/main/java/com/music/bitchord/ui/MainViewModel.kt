@@ -3552,6 +3552,10 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         _playlists.value = emptyList()
         _playlistOwned.value = emptyMap()
         ownershipInFlight.clear()
+        // Saved states for release cards belong to the account that left, and
+        // the loader short-circuits on a known id, so leaving them showed the
+        // previous session's heart forever.
+        _releaseLibrary.value = emptyMap()
         _songMenu.value = null
         _library.value = UiState.Loading
         _history.value = UiState.Loading
@@ -3615,6 +3619,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         _playlists.value = emptyList()
         _playlistOwned.value = emptyMap()
         ownershipInFlight.clear()
+        _releaseLibrary.value = emptyMap()
         _songMenu.value = null
         loadHome()
     }
