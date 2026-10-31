@@ -83,6 +83,9 @@ internal class UsbDirectTransport private constructor(
     override val bufferSizeFrames: Long = UsbDirectNative.capacity(handle).toLong()
 
     @Volatile private var failure: String? = null
+
+    /** Unplugged, as opposed to merely broken: the only case where the level cannot be restored. */
+    @Volatile private var detached = false
     private var lastFrames = 0L
 
     private val control = UsbControl { input, request, value, index, data ->
@@ -99,6 +102,7 @@ internal class UsbDirectTransport private constructor(
     }
 
     fun markDetached() {
+        detached = true
         failure = "USB disconnected"
     }
 
@@ -129,8 +133,11 @@ internal class UsbDirectTransport private constructor(
     override fun release() {
         // Leave the DAC at the volume it had before this stream lowered it;
         // the next owner, Android's driver or another app, expects that level.
-        // Pointless once it is unplugged, and a closed handle cannot be asked.
-        if (handle != 0L && failure == null) {
+        // Pointless once it is unplugged, and a closed handle cannot be asked —
+        // but a flush timeout or a bad frame buffer is no reason to leave the
+        // DAC quiet for every other app, which is what skipping on any failure
+        // did.
+        if (handle != 0L && !detached) {
             volumeControl?.let { volume -> runCatching { synchronized(volume) { volume.restore(control) } } }
         }
         // The worker joins (cancelling and acknowledging every transfer, then
