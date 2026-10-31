@@ -5705,7 +5705,10 @@ class PlaybackService : MediaLibraryService() {
         // the stall [AudioCache]'s key factory documents. Free to wait for: the
         // old stream is still playing.
         delay(AUDITION_RELEASE_MS)
-        TrackLog.d("BitChord", AudioCache.cachedSummary(Uri.parse(upgradedUri)))
+        // The summary copies and sorts the span set under the cache's monitor.
+        withContext(Dispatchers.Default) {
+            TrackLog.d("BitChord", AudioCache.cachedSummary(Uri.parse(upgradedUri)))
+        }
         return warmedThrough
     }
 
