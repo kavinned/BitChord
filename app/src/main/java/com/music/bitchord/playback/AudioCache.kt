@@ -2057,7 +2057,7 @@ object AudioCache {
         val opus = Uri.parse(AutomixAnalysisSource.opusUri(videoId))
         val renditions = renditionsOf(watch)
         val sameSource = renditions
-            .filter { !it.key.endsWith("#alt") }
+            .filterNot { isAltRendition(it.key) }
             .maxOfOrNull { it.cachedPrefix } ?: 0L
         if (sameSource >= MIN_ALIGNMENT_PREFIX_BYTES) return sameSource
         return maxOf(
