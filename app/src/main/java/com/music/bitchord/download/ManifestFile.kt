@@ -111,6 +111,10 @@ internal object ManifestFile {
         if (playlist.contains("#EXT-X-KEY:") && !playlist.contains("METHOD=NONE")) {
             error("Encrypted HLS cannot be saved")
         }
+        // Each range names a slice of one shared file, so dropping the tags
+        // saves that file once per range and joins the copies — a result that
+        // is several times too large and does not play.
+        if (playlist.contains("#EXT-X-BYTERANGE")) error("Byte-range HLS cannot be saved")
         val init = Regex("""#EXT-X-MAP:.*URI="([^"]+)"""").find(playlist)?.groupValues?.get(1)
             ?: error("HLS playlist has no initialisation segment")
         val media = playlist.lineSequence().map(String::trim)
