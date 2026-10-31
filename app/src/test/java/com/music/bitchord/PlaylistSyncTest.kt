@@ -104,10 +104,23 @@ class PlaylistSyncTest {
     fun `only a YouTube playlist is checked, under the id YouTube answers to`() {
         assertEquals("VLPL1", PlaylistSync.syncableBrowseId(record("VLPL1")))
         assertEquals("VLPL1", PlaylistSync.syncableBrowseId(record("PL1")))
+        assertEquals("VLOLAK5UY1", PlaylistSync.syncableBrowseId(record("OLAK5UY1")))
         assertNull(PlaylistSync.syncableBrowseId(record("MPREb_1", playlist = false)))
         assertNull(PlaylistSync.syncableBrowseId(record("VLOLAK1", playlist = false)))
         assertNull(PlaylistSync.syncableBrowseId(record("local:playlist:sp_local_1")))
         assertNull(PlaylistSync.syncableBrowseId(record("spotify:playlist:1")))
+    }
+
+    @Test
+    fun `a generated page is never checked, so its record cannot grow forever`() {
+        // Mixes, the liked page and uploads are rebuilt by YouTube as you listen:
+        // every check would find a fresh tail and download it again.
+        assertNull(PlaylistSync.syncableBrowseId(record("RDEM1")))
+        assertNull(PlaylistSync.syncableBrowseId(record("RDCLAK1")))
+        assertNull(PlaylistSync.syncableBrowseId(record("VLLM1")))
+        assertNull(PlaylistSync.syncableBrowseId(record("LMsong1")))
+        assertNull(PlaylistSync.syncableBrowseId(record("LLchannel1")))
+        assertNull(PlaylistSync.syncableBrowseId(record("UUupload1")))
     }
 
     @Test

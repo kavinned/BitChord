@@ -281,16 +281,20 @@ object PlaylistSync {
      * What a check looks at, under the id YouTube answers to: a playlist is
      * filed under whichever id it was downloaded from, with or without its `VL`.
      *
-     * Null for an album, and for the two kinds of playlist with no YouTube copy
-     * to compare against: Spotify's own and those imported to this device.
+     * Null for an album, for the two kinds of playlist with no YouTube copy to
+     * compare against — Spotify's own and those imported to this device — and
+     * for anything YouTube generates rather than the listener curating: mixes
+     * (`RD…`), the liked-songs page (`LM…`/`LL…`) and a channel's uploads.
+     * Those are rebuilt as you listen, so every check finds a fresh tail and
+     * the record grows for as long as the app is installed.
      */
     internal fun syncableBrowseId(record: SavedCollection): String? {
         val id = record.id
-        return when {
-            !record.playlist || ':' in id || id.startsWith("MP") -> null
-            id.startsWith("VL") -> id
-            else -> "VL$id"
-        }
+        if (!record.playlist || ':' in id) return null
+        val bare = id.removePrefix("VL")
+        val curated = bare.startsWith("PL") || bare.startsWith("OLAK5UY")
+        if (!curated) return null
+        return if (id.startsWith("VL")) id else "VL$id"
     }
 
     /** The tracks in [listing] that [record] has never named. */
