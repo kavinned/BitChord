@@ -65,7 +65,7 @@ internal interface BitPerfectTransport {
 }
 
 internal enum class BitPerfectDriver(val label: String) {
-    ANDROID_MIXER("Android bit-perfect mixer"),
+    ANDROID_MIXER("Android mixer (bit-perfect requested)"),
     USB_DIRECT("Direct USB"),
     AAUDIO_EXCLUSIVE("AAudio exclusive"),
 }
