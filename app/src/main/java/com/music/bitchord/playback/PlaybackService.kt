@@ -339,7 +339,7 @@ private fun Song.canStartStation(): Boolean =
 @UnstableApi
 class PlaybackService : MediaLibraryService() {
 
-    private var mediaSession: MediaLibrarySession? = null
+    @Volatile private var mediaSession: MediaLibrarySession? = null
     private val searchResults = ConcurrentHashMap<String, List<Song>>()
     private val searchBrowseResults = ConcurrentHashMap<String, List<BrowseItem>>()
     private val songCache = ConcurrentHashMap<String, Song>()
@@ -595,14 +595,14 @@ class PlaybackService : MediaLibraryService() {
      * [adoptPlayer] — so anything reading it must read it *now* rather than
      * capturing it.
      */
-    private var player: ExoPlayer? = null
+    @Volatile private var player: ExoPlayer? = null
 
     /**
      * The idle player. Between transitions it holds nothing; to arm one,
      * [CrossfadeController] loads it with the queue positioned on the incoming
      * track.
      */
-    private var spare: ExoPlayer? = null
+    @Volatile private var spare: ExoPlayer? = null
 
     private var crossfade: CrossfadeController? = null
 
