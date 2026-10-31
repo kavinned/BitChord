@@ -1484,14 +1484,14 @@ object AudioCache {
         .setCacheKeyFactory(keyFactory)
 
     /** Set once the player exists; read-ahead resolves streams the same way. */
-    private var upstreamFactory: DataSource.Factory? = null
+    @Volatile private var upstreamFactory: DataSource.Factory? = null
 
     fun setUpstream(factory: DataSource.Factory) {
         upstreamFactory = factory
     }
 
-    private var job: Job? = null
-    private var pendingQueue: List<String> = emptyList()
+    @Volatile private var job: Job? = null
+    @Volatile private var pendingQueue: List<String> = emptyList()
 
     /**
      * Gets the queue ahead of the one playing warmed up, in play order.
