@@ -8,6 +8,7 @@ import android.content.Context
 import android.content.Intent
 import android.content.res.Configuration
 import android.os.Bundle
+import android.os.SystemClock
 import android.graphics.Bitmap
 import android.view.View
 import android.widget.RemoteViews
@@ -57,7 +58,9 @@ class MediaWidgetPill : AppWidgetProvider() {
         val app = context.applicationContext
         scope.launch {
             try {
-                render(app, ids)
+                // One deadline for the whole broadcast, as MediaWidget uses:
+                // the window is the system's, not each widget's.
+                render(app, ids, SystemClock.elapsedRealtime() + BROADCAST_BUDGET_MS)
             } finally {
                 runCatching { pending.finish() }
             }
@@ -75,7 +78,8 @@ class MediaWidgetPill : AppWidgetProvider() {
                     manager.getAppWidgetIds(ComponentName(app, MediaWidgetPill::class.java))
                 }.getOrNull()
                 if (ids == null || ids.isEmpty()) return@launch
-                render(app, ids)
+                // Nothing is being held open on this path.
+                render(app, ids, deadline = null)
             }
         }
 
@@ -85,7 +89,7 @@ class MediaWidgetPill : AppWidgetProvider() {
          * frame, not after a cover fetch. The disc is one size and shared; the
          * body is per instance, because each can be a different width.
          */
-        private suspend fun render(context: Context, ids: IntArray) {
+        private suspend fun render(context: Context, ids: IntArray, deadline: Long?) {
             val manager = runCatching { AppWidgetManager.getInstance(context) }.getOrNull() ?: return
             val snapshot = MediaWidgetSnapshot.load(context)
             val key = snapshot.artworkUrl
@@ -93,6 +97,14 @@ class MediaWidgetPill : AppWidgetProvider() {
             val discPx = resources.getDimensionPixelSize(R.dimen.widget_pill_art)
             val heightPx = resources.getDimensionPixelSize(R.dimen.widget_pill_height)
             for (id in ids) {
+                // Whatever is left of the broadcast, never more than one
+                // widget's own allowance. Past it, the rest keep what they
+                // last drew rather than the launcher blaming a timeout.
+                val budget = when (deadline) {
+                    null -> RENDER_TIMEOUT_MS
+                    else -> minOf(RENDER_TIMEOUT_MS, deadline - SystemClock.elapsedRealtime())
+                }
+                if (budget <= 0L) continue
                 val widthPx = widthPx(context, manager, id)
                 val cachedDisc = key?.let { MediaWidgetArt.peekCircle(it, discPx) }
                 val cachedBody = key?.let { MediaWidgetArt.peekPill(it, widthPx, heightPx) }
@@ -101,7 +113,7 @@ class MediaWidgetPill : AppWidgetProvider() {
                     // RemoteViews replaces the whole tree. See MediaWidget.render.
                     manager.push(id, views(context, snapshot, cachedDisc ?: lastDisc, cachedBody ?: lastBody[id]))
                 }
-                val drawn = withTimeoutOrNull(RENDER_TIMEOUT_MS) {
+                val drawn = withTimeoutOrNull(budget) {
                     val disc = cachedDisc ?: key?.let {
                         MediaWidgetArt.circle(context, snapshot.artworkUrl, discPx, it)
                     }
@@ -258,6 +270,9 @@ class MediaWidgetPill : AppWidgetProvider() {
         private const val MAX_WIDTH_PX = 1_600
 
         private const val RENDER_TIMEOUT_MS = 8_000L
+
+        /** What the system allows a widget broadcast before it reports a timeout. */
+        private const val BROADCAST_BUDGET_MS = 8_000L
 
         private const val ALPHA_ENABLED = 255
         private const val ALPHA_DISABLED = 90
