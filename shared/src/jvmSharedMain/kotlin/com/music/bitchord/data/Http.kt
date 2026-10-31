@@ -149,10 +149,10 @@ object Http {
 const val MAX_LOOKUP_BODY_BYTES = 4L * 1024 * 1024
 
 /**
- * [ResponseBody.string], with a ceiling. Null rather than a truncated body:
- * half a JSON document is not a smaller answer to the same question.
+ * [ResponseBody.bytes], with a ceiling. Null rather than a truncated body:
+ * half a document is not a smaller answer to the same question.
  */
-fun ResponseBody.boundedString(maxBytes: Long = MAX_LOOKUP_BODY_BYTES): String? {
+fun ResponseBody.boundedBytes(maxBytes: Long = MAX_LOOKUP_BODY_BYTES): ByteArray? {
     if (contentLength() > maxBytes) return null
     val input = byteStream()
     val out = java.io.ByteArrayOutputStream()
@@ -165,5 +165,9 @@ fun ResponseBody.boundedString(maxBytes: Long = MAX_LOOKUP_BODY_BYTES): String? 
         if (total > maxBytes) return null
         out.write(buffer, 0, read)
     }
-    return out.toString(Charsets.UTF_8.name())
+    return out.toByteArray()
 }
+
+/** [ResponseBody.string], with the same ceiling as [boundedBytes]. */
+fun ResponseBody.boundedString(maxBytes: Long = MAX_LOOKUP_BODY_BYTES): String? =
+    boundedBytes(maxBytes)?.toString(Charsets.UTF_8)

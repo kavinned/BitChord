@@ -2,6 +2,7 @@ package com.music.bitchord.data.canvas
 
 import com.music.bitchord.data.DebugLog as Log
 import com.music.bitchord.data.Http
+import com.music.bitchord.data.boundedBytes
 import com.google.protobuf.CodedInputStream
 import com.google.protobuf.CodedOutputStream
 import kotlinx.serialization.json.Json
@@ -56,6 +57,13 @@ object SpotifyCanvas {
      * player's own UA is turned away, so this wears a mobile client's instead.
      */
     private const val SPOTIFY_APP_UA = "Spotify/9.0.34.593 iOS/18.4 (iPhone15,3)"
+
+    /**
+     * A canvaz-cache answer is a small protobuf document. The body used to be
+     * read whole and then copied again into a String for the regex fallback,
+     * so one oversized answer cost twice its size in heap.
+     */
+    private const val MAX_CANVAS_RESPONSE_BYTES = 512L * 1024
 
     private val json = Json { ignoreUnknownKeys = true; isLenient = true }
     private val CANVAS_URL_REGEX = Regex("""https://[^"'\s\x00-\x1F]+\.cnvs\.mp4""")
@@ -360,7 +368,7 @@ object SpotifyCanvas {
                 if (!response.isSuccessful) {
                     Log.w(TAG, "canvaz-cache http ${response.code} for $trackUri")
                 }
-                if (response.isSuccessful) response.body?.bytes() else null
+                if (response.isSuccessful) response.body?.boundedBytes(MAX_CANVAS_RESPONSE_BYTES) else null
             }
         }.onFailure { Log.w(TAG, "canvaz-cache request threw: ${it.message}") }.getOrNull() ?: return null
 
