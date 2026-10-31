@@ -1647,7 +1647,8 @@ private val CollagePalettes = listOf(
     CollagePalette(Color(0xFF8E1426), Color(0xFFF0364F), Color(0xFFFFC4CC)),
 )
 
-private fun collagePalette(name: String): CollagePalette = CollagePalettes[abs(name.hashCode()) % CollagePalettes.size]
+private fun collagePalette(name: String): CollagePalette =
+    CollagePalettes[name.hashCode().mod(CollagePalettes.size)]
 
 /**
  * The artist in a large circle, with up to two related artists in smaller
