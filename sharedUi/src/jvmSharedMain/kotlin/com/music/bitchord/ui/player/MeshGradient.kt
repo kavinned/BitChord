@@ -169,9 +169,17 @@ fun MeshGradientBackground(
     // Home leaves several of these running at once, which is most of what the app
     // spends while it is idle on that screen.
     val shown = remember { mutableFloatStateOf(0f) }
+    // Same treatment for the colours, and it is the larger share: Home steps its
+    // palette every 3.6s with a 1.4s crossfade, so a static mesh still redrew the
+    // page at display rate for two fifths of its life to fade a colour nobody can
+    // see arriving. Forty-two steps of a fade that slow reads as the fade.
+    val shownColors = remember { mutableStateOf(tuned) }
+    val shownBase = remember { mutableStateOf(tuned.first().dimmed()) }
     LaunchedEffect(Unit) {
         while (true) {
             shown.floatValue = phase.value
+            shownColors.value = animatedColors.map { it.value }
+            shownBase.value = baseColor.value
             delay(nextMotionTickDelayMs())
         }
     }
@@ -203,17 +211,18 @@ fun MeshGradientBackground(
         // The base wash used to be `.background(baseColor)` on the modifier,
         // which read the animation in composition. It is the same rectangle,
         // drawn one phase later.
-        drawRect(color = baseColor.value)
+        drawRect(color = shownBase.value)
         val drift = shown.floatValue
+        val blobs = shownColors.value
 
-        animatedColors.forEachIndexed { index, color ->
+        animatedColors.forEachIndexed { index, _ ->
             val anchor = MESH_ANCHORS[index]
             val center = Offset(
                 x = (anchor.x + 0.16f * cos(drift * MESH_SPEEDS[index] + index * 1.7f)) * size.width,
                 y = (anchor.y + 0.16f * sin(drift * MESH_SPEEDS[index] * 0.9f + index * 2.3f)) * size.height,
             )
             val radius = size.maxDimension * 0.62f
-            val blob = color.value
+            val blob = blobs[index]
             drawCircle(
                 // Along smootherstep rather than a straight falloff: a straight one
                 // stops dead at the rim, and that corner showed as a ring where each
