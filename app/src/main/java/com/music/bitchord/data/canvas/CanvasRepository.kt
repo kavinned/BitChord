@@ -1,11 +1,10 @@
 package com.music.bitchord.data.canvas
 
+import android.os.SystemClock
 import com.music.bitchord.data.DebugLog as Log
 import com.music.bitchord.data.model.Song
 import com.music.bitchord.data.settings.AppSettings
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.sync.Mutex
-import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 
 /**
@@ -31,14 +30,25 @@ import kotlinx.coroutines.withContext
  * — network, parse, mismatch — as simply no canvas. The still art is always
  * underneath, so nothing here can break the player or the album page.
  *
- * Results are cached, misses included: nothing having a canvas is the common
- * case, and without negative caching every revisit would pay for three
- * lookups again to learn the same thing.
+ * Results are cached, misses included, for [CACHE_TTL_MS]: nothing having a
+ * canvas is the common case, and without negative caching every revisit would
+ * pay for three lookups again to learn the same thing.
  */
 object CanvasRepository {
 
     private const val TAG = "CanvasRepository"
     private const val CACHE_SIZE = 64
+
+    /**
+     * How long a settled answer is reused.
+     *
+     * The cached value carries the provider's URL, and Apple's are signed with
+     * an expiry. Kept for the process, a track's entry eventually hands the
+     * player a dead URL and no amount of retrying brings the clip back.
+     * Re-resolving is a few cheap requests every half hour, not a cost worth
+     * dodging.
+     */
+    internal const val CACHE_TTL_MS = 30 * 60 * 1000L
 
     /**
      * A settled answer for one track or release.
@@ -49,18 +59,17 @@ object CanvasRepository {
      * it resolves a beat after the track starts. A miss reached without it is
      * therefore provisional; everything else is final.
      */
-    private class Entry(val artwork: CanvasArtwork?, val withAlbum: Boolean)
+    internal class Entry(val artwork: CanvasArtwork?, val withAlbum: Boolean, val at: Long) {
+
+        /** Whether this answer still describes the question being asked [withAlbum]. */
+        fun reusable(withAlbum: Boolean, now: Long): Boolean =
+            now - at <= CACHE_TTL_MS && (artwork != null || this.withAlbum || !withAlbum)
+    }
 
     private val cache = object : LinkedHashMap<String, Entry>(CACHE_SIZE, 0.75f, true) {
         override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, Entry>) =
             size > CACHE_SIZE
     }
-
-    // Skipping through a queue fires a lookup per track. Serialising them
-    // keeps three providers' worth of requests off the wire at once, and means
-    // a track that was already resolved by the time its turn comes up is
-    // answered from the cache instead of fetched again.
-    private val lock = Mutex()
 
     /**
      * The canvas for [song], or null when there isn't one. Never throws.
@@ -119,7 +128,15 @@ object CanvasRepository {
             base = "song|${song.videoId}",
             spotifyFirst = AppSettings.prioritizeSpotifyCanvas.value,
         )
-        return synchronized(cache) { cache[key]?.artwork }
+        val now = SystemClock.elapsedRealtime()
+        synchronized(cache) {
+            val entry = cache[key] ?: return null
+            if (!entry.reusable(withAlbum = false, now)) {
+                cache.remove(key)
+                return null
+            }
+            return entry.artwork
+        }
     }
 
     /**
@@ -159,28 +176,29 @@ object CanvasRepository {
     private fun cacheKey(base: String, spotifyFirst: Boolean): String =
         "$base|spotifyFirst=$spotifyFirst"
 
+    /**
+     * Nothing is held across the provider chain: a canvas host that accepts a
+     * connection and then drips bytes now costs its own lookup the call
+     * timeout, not everyone else's too. Two lookups for the same key can run
+     * at once; both asking is harmless, and the last answer wins the cache.
+     */
     private suspend fun resolve(
         key: String,
         withAlbum: Boolean,
         lookUp: suspend () -> CanvasArtwork?,
-    ): CanvasArtwork? = lock.withLock {
+    ): CanvasArtwork? {
+        val now = SystemClock.elapsedRealtime()
         synchronized(cache) {
-            cache[key]?.let { if (it.reusable(withAlbum)) return@withLock it.artwork }
+            val entry = cache[key]
+            if (entry != null) {
+                if (entry.reusable(withAlbum, now)) return entry.artwork
+                cache.remove(key)
+            }
         }
         val found = withContext(Dispatchers.IO) { lookUp() }
-        synchronized(cache) { cache[key] = Entry(found, withAlbum) }
-        found
+        synchronized(cache) { cache[key] = Entry(found, withAlbum, SystemClock.elapsedRealtime()) }
+        return found
     }
-
-    /**
-     * Whether this answer can stand in for a lookup that now knows [withAlbum].
-     *
-     * A hit is a hit — the album could only have confirmed it. A miss stands
-     * too, unless it was reached blind and there is now an album name to try,
-     * which is the one case worth spending a second round of requests on.
-     */
-    private fun Entry.reusable(withAlbum: Boolean): Boolean =
-        artwork != null || this.withAlbum || !withAlbum
 
     /**
      * The first source that answers with something that survives [accept].
