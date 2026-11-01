@@ -1,6 +1,7 @@
 package com.music.bitchord.playback
 
 import android.net.Uri
+import android.os.SystemClock
 import android.util.Log
 import com.music.bitchord.data.TrackLog
 import com.music.bitchord.data.NerdStats
@@ -101,7 +102,23 @@ object QualityUpgrade {
      * not an interim copy to search over and swap to again.
      */
     private val followUps = ConcurrentHashMap<String, Pending>()
-    private val forced = ConcurrentHashMap<String, SourceStream>()
+
+    /** A proved upgrade parked for the player to open, and when it was parked. */
+    private class Forced(val stream: SourceStream, val at: Long)
+
+    /**
+     * How long a parked upgrade URL is trusted.
+     *
+     * The URL was minted for the swap and is not ours to keep alive: modules
+     * sign theirs for around five hours, and a track re-opened after that got
+     * the expired copy instead of resolving again. Fifteen minutes matches
+     * [StreamChoice][com.music.bitchord.playback.StreamChoice]'s own promise,
+     * far enough inside every expiry seen while still covering every seek and
+     * resume a listener actually makes.
+     */
+    internal const val FORCED_TTL_MS = 15 * 60 * 1000L
+
+    private val forced = ConcurrentHashMap<String, Forced>()
 
     internal fun needsLosslessFollowUp(format: StreamFormat): Boolean =
         SourceResolver.requestForNow() is StreamRequest.Lossless &&
@@ -790,14 +807,21 @@ object QualityUpgrade {
         followUps.values.forEach { it.inFlight?.cancel() }
         followUps.clear()
         shelved.entries.removeIf { !permitted(it.value) }
-        forced.entries.removeIf { (mediaId, stream) -> mediaId !in keep && !permitted(stream) }
+        forced.entries.removeIf { (mediaId, held) -> mediaId !in keep && !permitted(held.stream) }
     }
 
     // ── Handing the stream to the player ────────────────────────────────────
 
-    /** Parks [stream] for [mediaId], to be picked up when the item is reopened. */
-    fun force(mediaId: String, stream: SourceStream) {
-        forced[mediaId] = stream
+    /**
+     * Parks [stream] for [mediaId], to be picked up when the item is reopened.
+     *
+     * [at] is a test seam; every production caller uses the clock.
+     */
+    fun force(mediaId: String, stream: SourceStream, at: Long = SystemClock.elapsedRealtime()) {
+        // Nothing removes a parked stream when its track simply finishes, so
+        // the expired ones go on the next upgrade instead.
+        forced.entries.removeIf { at - it.value.at > FORCED_TTL_MS }
+        forced[mediaId] = Forced(stream, at)
     }
 
     /**
@@ -822,7 +846,22 @@ object QualityUpgrade {
      */
     fun forcedStream(uri: Uri): SourceStream? {
         if (uri.getQueryParameter(MARKER)?.startsWith(UPGRADED) != true) return null
-        return uri.getQueryParameter("v")?.let(forced::get)
+        return forcedStream(uri.getQueryParameter("v"))
+    }
+
+    /**
+     * The parked stream for [mediaId], unless its URL is older than
+     * [FORCED_TTL_MS] — in which case the answer is a fresh resolve, not a
+     * signed URL that expired while it sat here.
+     */
+    internal fun forcedStream(mediaId: String?, now: Long = SystemClock.elapsedRealtime()): SourceStream? {
+        if (mediaId == null) return null
+        val held = forced[mediaId] ?: return null
+        if (now - held.at > FORCED_TTL_MS) {
+            forced.remove(mediaId)
+            return null
+        }
+        return held.stream
     }
 
     /** The same URI, marked so Media3 rebuilds it and each upgrade gets its own cache entry. */
