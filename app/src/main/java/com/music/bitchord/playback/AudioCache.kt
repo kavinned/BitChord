@@ -5,6 +5,7 @@ import android.media.MediaDataSource
 import android.net.ConnectivityManager
 import android.net.NetworkCapabilities
 import android.net.Uri
+import android.os.Looper
 import android.os.SystemClock
 import com.music.bitchord.R
 import com.music.bitchord.data.Http
@@ -1298,6 +1299,10 @@ object AudioCache {
 
     private const val MAX_KNOWN_TOTALS = 64
 
+    /** Bounded like the other session maps; only tracks near the playhead matter. */
+    private const val MAX_ANALYSIS_TRACKS = 256
+    private const val MAX_RENDITION_KEYS = 256
+
     /** Bounded like the other session maps; only the queue's keys ever matter. */
     private const val MAX_SERVED_KEYS = 256
     private const val COPY_BUFFER_BYTES = 64 * 1024
@@ -1815,7 +1820,9 @@ object AudioCache {
             if (pendingQueue.firstOrNull() != videoId) return false
             val length = minOf(CHUNK_BYTES, total - position)
             if (cache.getCachedBytes(key, position, length) < length) {
-                fetch(key, uri, position, length, pinKey = true)
+                // [total] so a response that stops short cannot leave this
+                // entry sized like a complete one — see [pull].
+                fetch(key, uri, position, length, pinKey = true, total = total)
                 // Written nowhere means the entry is held elsewhere; the rest
                 // of this pass would be just as wasted. See [fetch] for why
                 // this can be true even though the fetch just above returned
@@ -2083,6 +2090,7 @@ object AudioCache {
         // One round per track per session, and it is sized correctly up front
         // rather than grown into. See [analysisHeadSize] for why growing it was
         // the wrong shape.
+        if (analysisHeads.size >= MAX_ANALYSIS_TRACKS) analysisHeads.clear()
         if (analysisHeads.putIfAbsent(videoId, true) != null) return
         // Checked before the round is claimed, so the playback thread pays a set
         // lookup per tick rather than queueing coroutines four times a second on
@@ -2096,6 +2104,7 @@ object AudioCache {
                     }
                     .getOrNull() ?: 0L
                 val want = analysisHeadSize(total)
+                if (analysisHeadWant.size >= MAX_ANALYSIS_TRACKS) analysisHeadWant.clear()
                 analysisHeadWant[videoId] = want
                 TrackLog.w(
                     TAG,
@@ -2356,17 +2365,32 @@ object AudioCache {
      * Which cache keys belong to [videoId], memoized.
      *
      * [SimpleCache.getKeys] copies the entire key set on every call, and this
-     * runs on the main thread twice per crossfade tick — four times a second,
-     * against a cache holding every track ever played. Which *renditions* exist
-     * changes only when a new one starts downloading, so it is safe to hold for
-     * a few seconds; how much of each is on disk is not memoized and is still
-     * read fresh every time.
+     * is asked on the main thread twice per crossfade tick — four times a
+     * second, against a cache holding every track ever played. Which *renditions*
+     * exist changes only when a new one starts downloading, so it is safe to
+     * hold for a few seconds; how much of each is on disk is not memoized and is
+     * still read fresh every time.
      */
     private fun renditionKeysFor(videoId: String): List<String> {
         val now = SystemClock.elapsedRealtime()
-        renditionKeys[videoId]?.let { (at, keys) ->
-            if (now - at < RENDITION_KEYS_TTL_MS) return keys
+        val memo = renditionKeys[videoId]
+        if (memo != null && now - memo.first < RENDITION_KEYS_TTL_MS) return memo.second
+        // The crossfade tick asks this four times a second from the main thread
+        // for a track that has not started downloading, and [SimpleCache.getKeys]
+        // copies every key on each call. There the last answer stands until the
+        // read on [scope] lands, and the analyser asks again on its next tick.
+        if (Looper.myLooper() == Looper.getMainLooper()) {
+            scope.launch { readRenditionKeys(videoId) }
+            return memo?.second.orEmpty()
         }
+        // Everywhere else the answer is needed now: [completeSibling] runs
+        // inside a cache open, where an empty list is an offline track that
+        // will not play.
+        return readRenditionKeys(videoId)
+    }
+
+    /** Enumerates and memoizes [videoId]'s cache keys; an empty answer is never kept. */
+    private fun readRenditionKeys(videoId: String): List<String> {
         val keys = cache.keys.filter { it == videoId || it.startsWith("$videoId#") }
         // An empty answer is never remembered. The head round asks this
         // question a moment before it starts writing — to log `held=` — and
@@ -2379,7 +2403,8 @@ object AudioCache {
         // entry. Cold is the one state where the list is guaranteed to change
         // next, so cold is the one state that cannot be cached.
         if (keys.isNotEmpty()) {
-            renditionKeys[videoId] = now to keys
+            if (renditionKeys.size >= MAX_RENDITION_KEYS) renditionKeys.clear()
+            renditionKeys[videoId] = SystemClock.elapsedRealtime() to keys
         } else {
             renditionKeys.remove(videoId)
         }
@@ -2579,6 +2604,10 @@ object AudioCache {
      * from what this request resolves to. A caller that knows exactly what it is
      * fetching, as [requestAnalysisHead] does, is better off saying so than
      * letting a global decide on its behalf.
+     *
+     * [total] is the server's size for the whole item when the caller knows it,
+     * so a ranged response that stops short leaves the entry too large rather
+     * than looking complete — see [pull].
      */
     private suspend fun fetch(
         cacheKey: String,
@@ -2586,6 +2615,7 @@ object AudioCache {
         position: Long,
         length: Long,
         pinKey: Boolean = false,
+        total: Long = 0L,
     ) {
         if (upstreamFactory == null) return
         if (cache.getCachedBytes(cacheKey, position, length) >= length) return
@@ -2605,14 +2635,21 @@ object AudioCache {
         // the cost, and only a probe that actually lands is worth following
         // with the rest of the range.
         if (length > LOCK_PROBE_BYTES) {
-            pull(cacheKey, uri, position, LOCK_PROBE_BYTES, pinKey)
+            pull(cacheKey, uri, position, LOCK_PROBE_BYTES, pinKey, total)
             if (cache.getCachedBytes(cacheKey, position, LOCK_PROBE_BYTES) < LOCK_PROBE_BYTES) return
         }
-        pull(cacheKey, uri, position, length, pinKey)
+        pull(cacheKey, uri, position, length, pinKey, total)
     }
 
     /** The actual network pull behind [fetch], unconditional and unchecked. */
-    private suspend fun pull(cacheKey: String, uri: Uri, position: Long, length: Long, pinKey: Boolean) {
+    private suspend fun pull(
+        cacheKey: String,
+        uri: Uri,
+        position: Long,
+        length: Long,
+        pinKey: Boolean,
+        total: Long = 0L,
+    ) {
         val upstream = upstreamFactory ?: return
 
         // Whose track this is, taken off the URI rather than off [cacheKey]:
@@ -2636,6 +2673,16 @@ object AudioCache {
             .setPosition(position)
             .setLength(length)
             .build()
+        // Where this write lands: the pinned key when one was named, otherwise
+        // whatever [keyFactory] resolves the spec to — see [fetch].
+        val writtenKey = if (pinKey) cacheKey else keyFactory.buildCacheKey(spec)
+        // Media3 records a resource's length from the response, so a response
+        // that stops short lowers it, and [completeCopyOf] then copies the
+        // clipped file out as a whole track. Taken before the pull and handed
+        // back to the grow-only [recordLength] afterwards.
+        val lengthBefore = runCatching {
+            ContentMetadata.getContentLength(cache.getContentMetadata(writtenKey))
+        }.getOrDefault(0L)
         val writer = CacheWriter(source, spec, /* temporaryBuffer = */ null, /* listener = */ null)
 
         runCatching {
@@ -2662,6 +2709,9 @@ object AudioCache {
                 about = about,
             )
         }
+        // The server's total wins over both the short response and the length
+        // the entry had before; [recordLength] refuses anything smaller.
+        recordLength(writtenKey, maxOf(lengthBefore, total))
     }
 }
 
