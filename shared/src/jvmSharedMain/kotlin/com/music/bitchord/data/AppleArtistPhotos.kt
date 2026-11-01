@@ -8,6 +8,7 @@ import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
+import okhttp3.OkHttpClient
 import okhttp3.Request
 import okio.Buffer
 import java.net.URLEncoder
@@ -55,16 +56,29 @@ object AppleArtistPhotos {
      */
     private const val KEY_PREFIX = "v2|"
 
-    private val client by lazy {
-        Http.client.newBuilder()
-            .callTimeout(8, TimeUnit.SECONDS)
-            .connectTimeout(4, TimeUnit.SECONDS)
-            .build()
-    }
+    /** Test seam: the unit tests replace this to answer the two fixed hosts. */
+    internal var client: OkHttpClient = Http.client.newBuilder()
+        .callTimeout(8, TimeUnit.SECONDS)
+        .connectTimeout(4, TimeUnit.SECONDS)
+        .build()
 
     private val json = Json { ignoreUnknownKeys = true }
 
     private val OG_IMAGE = Regex("""property="og:image"\s+content="([^"]+)"""")
+
+    /**
+     * What a lookup proved.
+     *
+     * A failed request and an artist Apple does not have both used to arrive
+     * as null, and the caller remembered both as "this artist has no photo".
+     * One 429 then hid that card for good, across restarts. Only [Absent] may
+     * be remembered; [Failed] is a question still open.
+     */
+    private sealed interface Outcome {
+        data class Found(val url: String) : Outcome
+        data object Absent : Outcome
+        data object Failed : Outcome
+    }
 
     /** Answers from an earlier process. */
     fun seed(photos: Map<String, String>) {
@@ -91,10 +105,13 @@ object AppleArtistPhotos {
         val titles = AppleCatalogue.keys(runCatching { catalogue() }.getOrDefault(emptyList()))
         if (titles.isEmpty()) return null
         val found = withContext(Dispatchers.IO) {
-            runCatching { lookup(artistName, name, titles) }
+            when (val outcome = runCatching { lookup(artistName, name, titles) }
                 .onFailure { Log.d(TAG, "lookup failed for $artistName: $it") }
-                .getOrElse { return@withContext null } // a network miss: not remembered
-                ?: ""
+                .getOrDefault(Outcome.Failed)) {
+                is Outcome.Found -> outcome.url
+                Outcome.Absent -> ""
+                Outcome.Failed -> return@withContext null // a request miss: not remembered
+            }
         } ?: return null
         known[key] = found
         return found.ifEmpty { null }
@@ -113,25 +130,40 @@ object AppleArtistPhotos {
      * candidate must first share a title with [titles]; one that doesn't is
      * somebody else and is never counted against [MATCHES_TRIED].
      */
-    private fun lookup(artistName: String, key: String, titles: Set<String>): String? {
+    private fun lookup(artistName: String, key: String, titles: Set<String>): Outcome {
         val url = "https://itunes.apple.com/search?term=${URLEncoder.encode(artistName, "UTF-8")}" +
             "&entity=musicArtist&limit=5"
         val body = client.newCall(Request.Builder().url(url).header("User-Agent", USER_AGENT).build())
-            .execute().use { if (it.isSuccessful) it.body?.string() else null } ?: return null
-        val results = json.parseToJsonElement(body).jsonObject["results"]?.jsonArray ?: return null
-        return results.asSequence()
+            .execute().use { response ->
+                if (!response.isSuccessful) return Outcome.Failed
+                response.body?.string() ?: return Outcome.Failed
+            }
+        val results = runCatching { json.parseToJsonElement(body).jsonObject["results"]?.jsonArray }
+            .getOrNull() ?: return Outcome.Failed
+        val candidates = results.asSequence()
             .map { it.jsonObject }
             .filter { it.string("artistName").orEmpty().matchKey() == key }
             .filter { it.string("artistLinkUrl").orEmpty().startsWith("https://music.apple.com/") }
-            .filter { result ->
-                val id = result.string("artistId")?.toLongOrNull() ?: return@filter false
-                AppleCatalogue.sharesTitles(id, titles).also { shares ->
-                    if (!shares) Log.d(TAG, "$artistName: Apple ${result.string("artistName")} ($id) shares no titles, skipped")
-                }
+            .toList()
+        // The search answered and none of its results is this artist.
+        if (candidates.isEmpty()) return Outcome.Absent
+
+        val pages = mutableListOf<String>()
+        for (result in candidates) {
+            val id = result.string("artistId")?.toLongOrNull() ?: continue
+            if (!AppleCatalogue.sharesTitles(id, titles)) {
+                Log.d(TAG, "$artistName: Apple ${result.string("artistName")} ($id) shares no titles, skipped")
+                continue
             }
-            .mapNotNull { it.string("artistLinkUrl")?.substringBefore('?') }
-            .take(MATCHES_TRIED)
-            .firstNotNullOfOrNull(::ogImage)
+            result.string("artistLinkUrl")?.substringBefore('?')?.let(pages::add)
+            if (pages.size == MATCHES_TRIED) break
+        }
+        // Candidates by name existed but none could be proved this artist:
+        // [AppleCatalogue.sharesTitles] answers a failed request with the same
+        // false a genuine "somebody else" gets, so this is unproven, not absent.
+        if (pages.isEmpty()) return Outcome.Failed
+        for (page in pages) ogImage(page)?.let { return Outcome.Found(it) }
+        return Outcome.Absent
     }
 
     private const val MATCHES_TRIED = 2
@@ -141,7 +173,9 @@ object AppleArtistPhotos {
     /** The page's `og:image`, read off its head and the download dropped as soon as it's found. */
     private fun ogImage(pageUrl: String): String? =
         client.newCall(Request.Builder().url(pageUrl).header("User-Agent", USER_AGENT).build()).execute().use { response ->
-            if (!response.isSuccessful) return null
+            // A failed page is an open question, not proof the artist has no
+            // photo — [photoFor] must not remember it either way.
+            if (!response.isSuccessful) error("Apple artist page failed (HTTP ${response.code})")
             val source = response.body?.source() ?: return null
             val buffer = Buffer()
             val head = StringBuilder()
