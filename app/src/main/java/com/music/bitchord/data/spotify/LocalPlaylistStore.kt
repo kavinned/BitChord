@@ -7,6 +7,8 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import org.json.JSONArray
 import org.json.JSONObject
+import java.util.concurrent.Executor
+import java.util.concurrent.Executors
 
 data class LocalPlaylist(
     val id: String,
@@ -22,12 +24,32 @@ object LocalPlaylistStore {
 
     private lateinit var prefs: SharedPreferences
 
+    /**
+     * Encoding and writing the whole collection is O(library) and every edit
+     * asks for it, so [persist] only records the newest list on the caller's
+     * (main) thread. One background writer encodes whatever is newest when it
+     * gets there; a burst of edits costs one encode.
+     */
+    private var writer: Executor = Executors.newSingleThreadExecutor { runnable ->
+        Thread(runnable, "local-playlist-save").apply { isDaemon = true }
+    }
+    private var pending: List<LocalPlaylist>? = null
+
     private val _playlists = MutableStateFlow<List<LocalPlaylist>>(emptyList())
     val playlists = _playlists.asStateFlow()
 
     fun init(context: Context) {
         prefs = context.getSharedPreferences(PREF_NAME, Context.MODE_PRIVATE)
         load()
+    }
+
+    /** Test-only dependency injection; production uses [init]. */
+    @Synchronized
+    internal fun initForTesting(testPrefs: SharedPreferences, testWriter: Executor) {
+        prefs = testPrefs
+        writer = testWriter
+        pending = null
+        _playlists.value = emptyList()
     }
 
     private fun load() {
@@ -96,30 +118,48 @@ object LocalPlaylistStore {
 
     private fun persist(list: List<LocalPlaylist>) {
         if (!this::prefs.isInitialized) return
-        runCatching {
-            val jsonArray = JSONArray()
-            for (playlist in list) {
-                val pObj = JSONObject()
-                pObj.put("id", playlist.id)
-                pObj.put("title", playlist.title)
-                val songsArray = JSONArray()
-                for (song in playlist.songs) {
-                    val sObj = JSONObject()
-                    sObj.put("videoId", song.videoId)
-                    sObj.put("title", song.title)
-                    sObj.put("artist", song.artist)
-                    sObj.put("thumbnailUrl", song.thumbnailUrl)
-                    sObj.put("durationText", song.durationText)
-                    sObj.put("artistId", song.artistId)
-                    sObj.put("albumId", song.albumId)
-                    sObj.put("albumName", song.albumName)
-                    sObj.put("isVideo", song.isVideo)
-                    songsArray.put(sObj)
-                }
-                pObj.put("songs", songsArray)
-                jsonArray.put(pObj)
-            }
-            prefs.edit().putString(KEY_PLAYLISTS, jsonArray.toString()).apply()
+        val queued = synchronized(this) {
+            val alreadyQueued = pending != null
+            pending = list
+            alreadyQueued
         }
+        if (queued) return
+        writer.execute(::flushPending)
     }
+
+    private fun flushPending() {
+        val list = synchronized(this) {
+            val next = pending ?: return
+            pending = null
+            next
+        }
+        val encoded = encode(list) ?: return
+        prefs.edit().putString(KEY_PLAYLISTS, encoded).apply()
+    }
+
+    private fun encode(list: List<LocalPlaylist>): String? = runCatching {
+        val jsonArray = JSONArray()
+        for (playlist in list) {
+            val pObj = JSONObject()
+            pObj.put("id", playlist.id)
+            pObj.put("title", playlist.title)
+            val songsArray = JSONArray()
+            for (song in playlist.songs) {
+                val sObj = JSONObject()
+                sObj.put("videoId", song.videoId)
+                sObj.put("title", song.title)
+                sObj.put("artist", song.artist)
+                sObj.put("thumbnailUrl", song.thumbnailUrl)
+                sObj.put("durationText", song.durationText)
+                sObj.put("artistId", song.artistId)
+                sObj.put("albumId", song.albumId)
+                sObj.put("albumName", song.albumName)
+                sObj.put("isVideo", song.isVideo)
+                songsArray.put(sObj)
+            }
+            pObj.put("songs", songsArray)
+            jsonArray.put(pObj)
+        }
+        jsonArray.toString()
+    }.getOrNull()
 }
