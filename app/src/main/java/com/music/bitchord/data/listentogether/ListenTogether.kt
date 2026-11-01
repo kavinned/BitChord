@@ -489,6 +489,16 @@ object ListenTogether {
         return false
     }
 
+    /**
+     * Whether a socket that held for [connectedForMs] starts the backoff over.
+     *
+     * Pure so it can be unit-tested without Android. Opening is not health: a
+     * server that accepts the connection and then drops it must not be redialled
+     * at the short delay for as long as it stays broken.
+     */
+    internal fun shouldResetBackoff(connectedForMs: Long): Boolean =
+        connectedForMs >= BACKOFF_RESET_AFTER_MS
+
     private fun startHealthMonitor() {
         healthMonitorJob?.cancel()
         healthMonitorJob = scope.launch {
@@ -1049,6 +1059,11 @@ object ListenTogether {
             val code = _state.value.code
             val held = token
             val currentServer = activePartyServerBase ?: resolveHttpBase(effectiveIdleServerBase())
+            // Clear the party before stopping the socket. A frame already read
+            // from it would otherwise land in the reset state and put that
+            // party's queue back; [onFrame] drops anything that arrives once
+            // the code is null.
+            _state.value = State()
             socketJob?.cancel()
             socketJob = null
             session = null
@@ -1056,7 +1071,6 @@ object ListenTogether {
             token = null
             activePartyServerBase = null
             prefs.edit().remove(KEY_CODE).remove(KEY_TOKEN).apply()
-            _state.value = State()
             if (code != null && held != null) {
                 releaseStaleSlotOnServer(currentServer, code, held)
             }
@@ -1216,6 +1230,7 @@ object ListenTogether {
         while (currentScopeActive()) {
             val code = _state.value.code ?: return
             val held = token ?: return
+            var openedAtMs = 0L
             try {
                 _state.update { it.copy(connection = Connection.CONNECTING) }
                 http.webSocket(
@@ -1223,7 +1238,7 @@ object ListenTogether {
                     request = { header("Authorization", "Bearer $held") },
                 ) {
                     session = this
-                    backoffMs = 1_000L
+                    openedAtMs = SystemClock.elapsedRealtime()
                     _state.update { it.copy(connection = Connection.LIVE, error = null) }
                     launch { pingLoop() }
                     launch { reportLoop() }
@@ -1237,6 +1252,15 @@ object ListenTogether {
                 Log.w(TAG, "party socket dropped: ${redact(failure.message)}")
             } finally {
                 session = null
+                // A socket that opened and dropped again straight away is the
+                // same outage still going on. Resetting here would redial it
+                // every second for the whole of that outage; a connection that
+                // actually held has earned the fresh start.
+                if (openedAtMs != 0L &&
+                    shouldResetBackoff(SystemClock.elapsedRealtime() - openedAtMs)
+                ) {
+                    backoffMs = 1_000L
+                }
             }
             if (!currentScopeActive()) return
             _state.update { it.copy(connection = Connection.CONNECTING) }
@@ -1307,6 +1331,10 @@ object ListenTogether {
     }
 
     private fun onFrame(text: String) {
+        // No party code means this device has left: a frame still in flight
+        // from the old socket belongs to a party it is no longer in, and
+        // applying it would put that party's queue back into a cleared state.
+        if (_state.value.code == null) return
         val received = clock.nowMs()
         val frame = runCatching { json.parseToJsonElement(text).jsonObject }.getOrNull() ?: return
         when (frame["type"]?.jsonPrimitive?.content) {
@@ -1712,6 +1740,8 @@ object ListenTogether {
     private const val KICK_BLOCK_MS = 24L * 60 * 60 * 1000
 
     private const val PING_INTERVAL_MS = 15_000L
+    /** A socket must hold this long before a drop is treated as a fresh outage. */
+    private const val BACKOFF_RESET_AFTER_MS = 30_000L
     // Polled only while the Listen Together screen is open and no party socket is
     // live (see shouldSkipIdleProbe), so 10s costs nothing when nobody is looking.
     private const val HEALTH_POLL_INTERVAL_MS = 10_000L
