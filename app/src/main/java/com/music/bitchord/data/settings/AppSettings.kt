@@ -1887,7 +1887,16 @@ object AppSettings {
     }
 
     fun setDetailSongSort(browseId: String, value: SongSort) {
-        detailSongSorts.value = detailSongSorts.value + (browseId to value)
+        // One entry per album or playlist whose sort was ever changed, and
+        // nothing ever removed one, so the map grew with everything ever
+        // browsed. Re-inserting moves the key to the end, and the oldest fall
+        // off past the cap.
+        val next = (detailSongSorts.value - browseId) + (browseId to value)
+        detailSongSorts.value = if (next.size <= MAX_DETAIL_SONG_SORTS) {
+            next
+        } else {
+            next.entries.drop(next.size - MAX_DETAIL_SONG_SORTS).associate { it.key to it.value }
+        }
         prefs.edit().putString(
             KEY_DETAIL_SONG_SORTS,
             detailSongSorts.value.entries.joinToString(",") { (id, sort) -> "$id=${sort.name}" },
@@ -2152,6 +2161,9 @@ object AppSettings {
     const val MAX_UPGRADE_LENGTH_SLACK_SECONDS = 10
 
     private const val DEFAULT_PERFORMANCE_REFRESH_RATE = 120
+
+/** How many per-album sort choices are remembered before the oldest are dropped. */
+private const val MAX_DETAIL_SONG_SORTS = 200
 
     private fun normalizePerformanceRefreshRate(value: Int): Int =
         value.takeIf { it in 50..240 } ?: DEFAULT_PERFORMANCE_REFRESH_RATE
