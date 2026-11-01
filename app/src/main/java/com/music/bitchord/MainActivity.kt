@@ -99,6 +99,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.SideEffect
+import androidx.compose.runtime.saveable.Saver
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.saveable.rememberSaveableStateHolder
 import androidx.compose.runtime.setValue
@@ -1245,7 +1246,11 @@ private fun BitChordApp(
     // that opening is on the stack, so back from a page opened off it returns
     // to where it was.
     val replayEntryId = navigator.entries.lastOrNull { it.route == AppRoute.Replay }?.id
-    val replayListState = remember(replayEntryId, replayLandingPage) { LazyListState() }
+    val replayListState = rememberSaveable(
+        replayEntryId,
+        replayLandingPage,
+        saver = LazyListState.Saver,
+    ) { LazyListState() }
     val replayScrolled by remember(replayListState) {
         derivedStateOf {
             replayListState.firstVisibleItemIndex > 0 ||
@@ -1260,7 +1265,9 @@ private fun BitChordApp(
     // can leave the incoming album attached to the disappearing artist/grid
     // layout and unable to consume scroll gestures. Keep one state per page
     // while it is on the navigation stack instead.
-    val detailListStates = remember { mutableMapOf<String, LazyListState>() }
+    val detailListStates = rememberSaveable(saver = releaseListStatesSaver) {
+        mutableMapOf<String, LazyListState>()
+    }
     val detailListState = topDetail?.browseId?.let { browseId ->
         detailListStates.getOrPut(browseId) { LazyListState() }
     } ?: remember { LazyListState() }
@@ -2684,33 +2691,42 @@ private fun BitChordApp(
                 val sourceId = displayedSong.playbackSourceId
 
                 // A context link is navigation, not another page stacked over
-                // Now Playing. Clear the current route before restoring it.
+                // Now Playing. The branches that navigate clear the current
+                // route before restoring it; a shared link opens in the browser
+                // and leaves what the user was reading where it was.
                 dismissPlayer()
-                navigator.clear()
 
                 when (sourceType) {
                     PlaybackSourceType.BROWSE -> {
                         val id = sourceId ?: return@openSource
+                        navigator.clear()
                         viewModel.closeMoodGenre()
                         viewModel.openDetail(id, sourceTitle)
                     }
                     PlaybackSourceType.HOME -> {
+                        navigator.clear()
                         viewModel.closeMoodGenre()
                         selectedTab = TAB_HOME
                     }
                     PlaybackSourceType.SEARCH -> {
+                        navigator.clear()
                         viewModel.closeMoodGenre()
                         selectedTab = TAB_SEARCH
                     }
                     PlaybackSourceType.HISTORY -> {
+                        navigator.clear()
                         navigator.push(AppRoute.History)
                         viewModel.loadHistory()
                     }
                     PlaybackSourceType.REPLAY -> {
+                        navigator.clear()
                         replayLandingPage = ReplayStoryPage.INTRO
                         navigator.push(AppRoute.Replay)
                     }
-                    PlaybackSourceType.EXPLORE -> selectedTab = TAB_EXPLORE
+                    PlaybackSourceType.EXPLORE -> {
+                        navigator.clear()
+                        selectedTab = TAB_EXPLORE
+                    }
                     PlaybackSourceType.SHARED_LINK -> {
                         val id = sourceId ?: return@openSource
                         context.startActivity(
@@ -3132,7 +3148,7 @@ private fun BitChordApp(
                                 // the record as well as the list, so downloading an album
                                 // while its folder is open adds the folder rather than
                                 // waiting for the page to be reopened.
-                                val downloadCollections = remember(folderSongs, savedCollections, isDownloads) {
+                                val downloadCollections = remember(page.browseId, folderSongs.size, savedCollections, isDownloads) {
                                     if (isDownloads) Downloads.collectionsAmong(folderSongs) else emptyList()
                                 }
                                 LocalFolder(
@@ -3957,9 +3973,10 @@ private fun BitChordApp(
                                         expanded = librarySortMenuOpen,
                                         onDismissRequest = { librarySortMenuOpen = false },
                                     ) {
-                                        LibrarySort.entries.forEach { option ->
+                                        val labels = LibrarySort.entries.map { it.localizedLabel() }
+                                        LibrarySort.entries.forEachIndexed { index, option ->
                                             DropdownMenuItem(
-                                                text = { Text(option.localizedLabel()) },
+                                                text = { Text(labels[index]) },
                                                 trailingIcon = if (option == librarySort) {
                                                     { Icon(Icons.Rounded.Check, contentDescription = null) }
                                                 } else null,
@@ -5893,6 +5910,28 @@ private val OnboardingDismissEasing = CubicBezierEasing(0.32f, 0.72f, 0f, 1f)
 private fun tween(durationMillis: Int) =
     androidx.compose.animation.core.tween<Float>(durationMillis)
 
+/**
+ * Release pages' scroll offsets survive activity recreation the way tabs' do:
+ * not a rotation (the manifest handles that in place), but a theme, locale or
+ * font-scale change rebuilds the activity and a long album would jump back to
+ * the top. [LazyListState] is not itself saveable, so the map goes as flat
+ * browse-id/index/offset triples.
+ */
+internal val releaseListStatesSaver = Saver<MutableMap<String, LazyListState>, List<Any>>(
+    save = { states ->
+        states.entries.flatMap { (id, state) ->
+            listOf(id, state.firstVisibleItemIndex, state.firstVisibleItemScrollOffset)
+        }
+    },
+    restore = { flat ->
+        mutableMapOf<String, LazyListState>().apply {
+            for (i in flat.indices step 3) {
+                put(flat[i] as String, LazyListState(flat[i + 1] as Int, flat[i + 2] as Int))
+            }
+        }
+    },
+)
+
 @Composable
 private fun LibrarySort.localizedLabel(): String = when (this) {
     LibrarySort.DEFAULT -> stringResource(R.string.sort_default)
@@ -5950,15 +5989,16 @@ private fun FrostedSortMenu(
                 )
             }
         }
-        SongSort.entries
+        val options = SongSort.entries
             .filter { it != SongSort.DATE_ADDED_ASC && it != SongSort.DATE_ADDED_DESC }
-            .forEach { option ->
-                FrostedMenuRow(
-                    label = option.localizedLabel(),
-                    checked = option == selected,
-                    onClick = { onSelect(option) },
-                )
-            }
+        val labels = options.map { it.localizedLabel() }
+        options.forEachIndexed { index, option ->
+            FrostedMenuRow(
+                label = labels[index],
+                checked = option == selected,
+                onClick = { onSelect(option) },
+            )
+        }
     }
 }
 
@@ -5988,9 +6028,10 @@ private fun FrostedFolderMenu(
             thickness = 0.5.dp,
             color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f),
         )
-        LocalMusicSort.entries.forEach { option ->
+        val localSortLabels = LocalMusicSort.entries.map { it.localizedLabel() }
+        LocalMusicSort.entries.forEachIndexed { index, option ->
             FrostedMenuRow(
-                label = option.localizedLabel(),
+                label = localSortLabels[index],
                 checked = option == sort,
                 onClick = { onSort(option) },
             )
