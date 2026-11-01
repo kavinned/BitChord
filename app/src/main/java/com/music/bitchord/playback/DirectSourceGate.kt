@@ -149,15 +149,17 @@ object DirectSourceGate {
      * player's own preparation, or left over from an earlier play.
      *
      * Asked every crossfade tick, so the cache is read at most once a
-     * [READY_RECHECK_MS] per track, and a yes is kept: bytes on disk do not
-     * stop being there mid-song.
+     * [READY_RECHECK_MS] per track. A yes expires like a no: the entry can be
+     * evicted, removed from the Cached songs folder, or cleared by the listener
+     * while the marker still asks, and a stale yes is the one answer that
+     * cannot correct itself.
      */
     fun isStreamReady(item: androidx.media3.common.MediaItem): Boolean {
         val uri = item.localConfiguration?.uri ?: return true
         if (uri.scheme != "bitchord") return true
         val now = android.os.SystemClock.elapsedRealtime()
         readyCheck?.let { (id, ready, at) ->
-            if (id == item.mediaId && (ready || now - at < READY_RECHECK_MS)) return ready
+            if (id == item.mediaId && now - at < READY_RECHECK_MS) return ready
         }
         // Or the whole file, for a track shorter than the threshold.
         val ready = AudioCache.cachedPrefixBytes(uri) >= READY_BYTES || AudioCache.isFullyCached(uri)
