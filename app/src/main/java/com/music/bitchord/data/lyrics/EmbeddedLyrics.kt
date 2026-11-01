@@ -49,7 +49,7 @@ object EmbeddedLyrics {
     private const val TAG = "BitChord"
 
     /**
-     * Most bytes worth pulling to find a tag.
+     * Most bytes worth pulling from either end of a file to find a tag.
      *
      * A cap rather than a size: this reads whatever region of the file holds
      * the metadata, and that region is small in all three containers — but its
@@ -58,6 +58,14 @@ object EmbeddedLyrics {
      * past this is not a tag this app produced.
      */
     private const val MAX_TAG_BYTES = 8 * 1024 * 1024
+
+    /**
+     * Where a tail read must start to cover the file's last [max] bytes, or
+     * null when the file is no larger than that and the head read already
+     * reached the end.
+     */
+    internal fun tailOffset(length: Long, max: Int): Long? =
+        if (length > max) length - max else null
 
     /**
      * The lyrics inside [uriString], or null when it has none worth showing.
@@ -78,9 +86,40 @@ object EmbeddedLyrics {
         }
 
     /** The raw LRC text for the file, preferring this app's word-timed field. */
-    private fun read(context: Context, uri: Uri): String? =
-        sidecar(uri.path.takeIf { uri.scheme == "file" })
-            ?: open(context, uri)?.use { fromBytes(it.readAtMost(MAX_TAG_BYTES)) }
+    private fun read(context: Context, uri: Uri): String? {
+        sidecar(uri.path.takeIf { uri.scheme == "file" })?.let { return it }
+        if (uri.scheme == "file") {
+            return uri.path?.let { File(it) }?.takeIf(File::isFile)?.let { read(it) }
+        }
+        val length = runCatching {
+            context.contentResolver.openFileDescriptor(uri, "r")?.use { it.statSize }
+        }.getOrNull()?.takeIf { it > 0 }
+        return scan(length) { context.contentResolver.openInputStream(uri) }
+    }
+
+    /**
+     * The raw LRC in [file], searching the front and — for Matroska — the end.
+     *
+     * A WebM download has its tags appended after the audio (see `WebmTagger`),
+     * so on a file longer than [MAX_TAG_BYTES] a front-only read never reaches
+     * them and a downloaded track that has lyrics reads as though it had none.
+     * The tail is fetched only when the head did not already cover the whole
+     * file, so a small file is scanned once.
+     */
+    private inline fun scan(length: Long?, open: () -> InputStream?): String? {
+        val head = open()?.use { it.readAtMost(MAX_TAG_BYTES) } ?: return null
+        fromBytes(head)?.let { return it }
+        if (!head.startsWith(MATROSKA_MAGIC)) return null
+        val start = length?.let { tailOffset(it, MAX_TAG_BYTES) } ?: return null
+        return open()?.use { input ->
+            if (!input.skipFully(start)) return null
+            matroska(input.readAtMost(MAX_TAG_BYTES))
+        }
+    }
+
+    /** The raw LRC in [file]; split from [read] so the front-and-tail scan has a seam a test can drive. */
+    internal fun read(file: File): String? =
+        scan(file.length().takeIf { it > 0 }) { file.inputStream() }
 
     /**
      * The `lyrics.lrc` written next to the offline package playlist at [path].
@@ -346,6 +385,25 @@ object EmbeddedLyrics {
             total += read
         }
         return out.toByteArray()
+    }
+
+    /**
+     * [InputStream.skip] may skip fewer bytes than asked for, and a short skip
+     * would scan the wrong region for the tail. False means the stream ended
+     * before [count] bytes went by.
+     */
+    private fun InputStream.skipFully(count: Long): Boolean {
+        var left = count
+        while (left > 0) {
+            val skipped = skip(left)
+            if (skipped > 0) {
+                left -= skipped
+                continue
+            }
+            if (read() == -1) return false
+            left--
+        }
+        return true
     }
 
     private fun ByteArray.startsWith(prefix: ByteArray): Boolean {
