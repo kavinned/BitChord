@@ -13,7 +13,6 @@ import android.net.Uri
 import android.widget.Toast
 import android.os.Bundle
 import android.os.Handler
-import android.os.Process
 import android.os.SystemClock
 import com.music.bitchord.data.TelemetryProvenance
 import kotlinx.coroutines.sync.Mutex
@@ -9007,32 +9006,27 @@ class PlaybackService : MediaLibraryService() {
     private inner class MediaLibraryCallback : MediaLibrarySession.Callback {
 
         /**
-         * The session is exported, so without this any app on the phone could
-         * browse the account's playlists and search it. The watch is the same
-         * package as this app (see wearos/build.gradle.kts), and the car
-         * controllers are the two the session already recognises for layouts.
+         * Who may read the library and search it. The session is exported, so
+         * without this any app on the phone could browse the account and
+         * search it. The watch is the same package as this app (see
+         * wearos/build.gradle.kts), and the car controllers are the two the
+         * session already recognises for layouts.
+         *
+         * This deliberately does **not** gate the connection itself. Transport
+         * control is an ordinary capability that lock-screen widgets and
+         * headset buttons use from packages the app has never heard of, and
+         * refusing those at connect took a working widget away without
+         * protecting anything the library guards below do not already cover.
          */
         private fun isTrusted(session: MediaSession, controller: MediaSession.ControllerInfo): Boolean =
             controller.packageName == packageName ||
                 session.isAutoCompanionController(controller) ||
                 session.isAutomotiveController(controller)
 
-        /**
-         * Who may hold a controller at all. [isTrusted] plus the system uids:
-         * the lock screen and the Bluetooth stack connect as SystemUI and as
-         * the Bluetooth process, so refusing them would take the user's own
-         * play/pause buttons away without closing anything. Browsing and
-         * search stay on [isTrusted] alone, which is where the library was
-         * being read from.
-         */
-        private fun mayConnect(session: MediaSession, controller: MediaSession.ControllerInfo): Boolean =
-            isTrusted(session, controller) || controller.uid < Process.FIRST_APPLICATION_UID
-
         override fun onConnect(
             session: MediaSession,
             controller: MediaSession.ControllerInfo,
         ): MediaSession.ConnectionResult {
-            if (!mayConnect(session, controller)) return MediaSession.ConnectionResult.reject()
             val sessionCommands = MediaSession.ConnectionResult.DEFAULT_SESSION_AND_LIBRARY_COMMANDS
                 .buildUpon()
                 .add(favoriteCommand)
@@ -9125,6 +9119,9 @@ class PlaybackService : MediaLibraryService() {
             browser: MediaSession.ControllerInfo,
             params: LibraryParams?,
         ): ListenableFuture<LibraryResult<MediaItem>> {
+            if (!isTrusted(session, browser)) {
+                return Futures.immediateFuture(LibraryResult.ofError(LibraryResult.RESULT_ERROR_PERMISSION_DENIED))
+            }
             val isRecent = params?.isRecent == true ||
                 params?.extras?.getBoolean("android.service.media.extra.RECENT") == true ||
                 params?.extras?.getBoolean("androidx.media.MediaBrowserCompat.EXTRA_RECENT") == true
@@ -9356,6 +9353,9 @@ class PlaybackService : MediaLibraryService() {
             browser: MediaSession.ControllerInfo,
             mediaId: String,
         ): ListenableFuture<LibraryResult<MediaItem>> = scope.future(Dispatchers.IO) {
+            if (!isTrusted(session, browser)) {
+                return@future LibraryResult.ofError(LibraryResult.RESULT_ERROR_PERMISSION_DENIED)
+            }
             val item = when (mediaId) {
                 MEDIA_ROOT_ID -> MediaItem.Builder()
                     .setMediaId(MEDIA_ROOT_ID)
@@ -9538,6 +9538,9 @@ class PlaybackService : MediaLibraryService() {
             controller: MediaSession.ControllerInfo,
             mediaItems: List<MediaItem>,
         ): ListenableFuture<List<MediaItem>> = scope.future(Dispatchers.IO) {
+            // A search passed in as a media item reaches the same catalog the
+            // browse and search callbacks are closed to.
+            if (!isTrusted(mediaSession, controller)) return@future emptyList()
             resolveMediaItems(mediaItems)
         }
 
