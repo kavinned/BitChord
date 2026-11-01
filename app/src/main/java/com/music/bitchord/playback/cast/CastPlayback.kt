@@ -113,6 +113,9 @@ class CastPlayback(
     private var requestedAt = 0L
 
     private var loadGeneration = 0
+
+    /** The generation of the load the receiver's queue was last settled at. */
+    private var loadedGeneration = 0
     private var loadJob: Job? = null
     private var reconcileJob: Job? = null
     private var reconcileAgain = false
@@ -213,6 +216,9 @@ class CastPlayback(
         remote.registerCallback(callback)
         active = true
         finished = false
+        // A session adopted rather than loaded starts settled: a generation
+        // left over from the one before it would look like a load in flight.
+        loadedGeneration = loadGeneration
 
         val player = localPlayer()
         if (player != null) {
@@ -340,8 +346,12 @@ class CastPlayback(
         val remote = client ?: return
         val status = remote.mediaStatus ?: return
         val state = status.playerState
-        // Whatever the phone last asked for has been answered by now.
-        requestedAt = 0L
+        // A reply to a seek can still report the old position; dropping the
+        // grace on that reply snapped the bar back. Only a position at what was
+        // asked for ends it.
+        if (requestedAt != 0L && seekSettled(remote.approximateStreamPosition, requestedPositionMs)) {
+            requestedAt = 0L
+        }
 
         when (state) {
             MediaStatus.PLAYER_STATE_PLAYING -> {
@@ -354,12 +364,21 @@ class CastPlayback(
                 loading = false
             }
             MediaStatus.PLAYER_STATE_IDLE -> {
-                if (!loading && status.idleReason == MediaStatus.IDLE_REASON_FINISHED) {
-                    wantsPlay = false
-                    onReceiverFinished()
+                // Any idle ends a load. Leaving the flag up because a finish
+                // arrived while one was in flight showed buffering for the rest
+                // of the session.
+                loading = false
+                if (status.idleReason == MediaStatus.IDLE_REASON_FINISHED) {
+                    // A finish reported for a queue a newer load has already
+                    // replaced is the old queue running out, not this one. The
+                    // generation says which; the flag only said something was
+                    // loading.
+                    if (loadedGeneration == loadGeneration) {
+                        wantsPlay = false
+                        onReceiverFinished()
+                    }
                 } else if (status.idleReason == MediaStatus.IDLE_REASON_ERROR) {
                     wantsPlay = false
-                    loading = false
                     say(R.string.cast_track_unsupported)
                 }
             }
@@ -416,6 +435,7 @@ class CastPlayback(
                 throw e
             } catch (t: Throwable) {
                 Log.e(TAG, "load threw", t)
+                loadedGeneration = generation
                 loading = false
                 wantsPlay = false
                 say(R.string.cast_connect_failed)
@@ -431,6 +451,7 @@ class CastPlayback(
             if (queueItem == null) {
                 // Nothing to play, so nothing to wait for. The receiver is left
                 // as it was; only the phone's idea of it is corrected.
+                loadedGeneration = generation
                 loading = false
                 wantsPlay = false
                 if (item != null) say(R.string.cast_track_unsupported)
@@ -454,6 +475,7 @@ class CastPlayback(
             if (generation != loadGeneration || !active) return@run
             if (!result.status.isSuccess) {
                 Log.w(TAG, "load failed: ${result.status.statusCode}")
+                loadedGeneration = generation
                 loading = false
                 wantsPlay = false
                 say(R.string.cast_track_unsupported)
@@ -461,6 +483,7 @@ class CastPlayback(
                 return@run
             }
             lastItemId = remote.mediaStatus?.currentItemId ?: lastItemId
+            loadedGeneration = generation
             loading = false
             sink?.onRemotePlaybackChanged()
             scheduleReconcile()
@@ -603,6 +626,14 @@ class CastPlayback(
         private const val AHEAD = 3
         private const val RECONCILE_DELAY_MS = 300L
         private const val SEEK_GRACE_MS = 1_500L
+
+        /**
+         * Whether the receiver's own clock has reached the position a seek
+         * asked for. Until it has, a status still reports where the track was,
+         * and treating that as settled snaps the bar back to it.
+         */
+        internal fun seekSettled(live: Long, requested: Long): Boolean =
+            live != C.TIME_UNSET && kotlin.math.abs(live - requested) <= SEEK_GRACE_MS
 
         /**
          * What a stream is, for a receiver that is told rather than left to
