@@ -7,6 +7,7 @@ import com.music.bitchord.ui.AppUi
 import com.music.bitchord.sharedui.resources.*
 import org.jetbrains.compose.resources.painterResource
 import org.jetbrains.compose.resources.stringResource
+import com.music.bitchord.ui.player.PlayerSettings
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
@@ -782,15 +783,16 @@ fun SearchPlayingBars(modifier: Modifier = Modifier) {
     // re-lays out the row it sits in.
     val elapsedNanos = remember { mutableLongStateOf(0L) }
     val running = LocalPlayingBarsMotion.current
-    LaunchedEffect(running) {
-        if (!running) return@LaunchedEffect
+    val reduceAnimation by PlayerSettings.reduceAnimation.collectAsStateWithLifecycle()
+    LaunchedEffect(running, reduceAnimation) {
+        if (!running || reduceAnimation) return@LaunchedEffect
         var last = Long.MIN_VALUE
         while (true) {
             withFrameNanos { now ->
                 if (last != Long.MIN_VALUE) elapsedNanos.longValue += now - last
                 last = now
             }
-            delay(MOTION_FRAME_GAP_MS)
+            delay(nextMotionTickDelayMs())
         }
     }
     // The plate is a fixed square so only the bars move, never the box around them.

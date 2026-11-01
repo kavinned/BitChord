@@ -38,6 +38,7 @@ import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.compositionLocalOf
 import androidx.compose.runtime.getValue
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
@@ -64,7 +65,8 @@ import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.CompositingStrategy
 import androidx.compose.ui.graphics.BlendMode
 import com.music.bitchord.ui.components.libraryGrid
-import com.music.bitchord.ui.components.MOTION_FRAME_GAP_MS
+import com.music.bitchord.ui.components.nextMotionTickDelayMs
+import com.music.bitchord.ui.player.PlayerSettings
 import com.music.bitchord.ui.components.LIBRARY_GRID_SPACING
 import androidx.compose.foundation.lazy.grid.items as gridItems
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
@@ -660,8 +662,11 @@ private fun loopPhase(periodMs: Int): State<Float> {
     val phase = remember { mutableFloatStateOf(0f) }
     val running = LocalArtworkMotion.current
     val scrolling = LocalArtworkScrolling.current
-    LaunchedEffect(running, periodMs, scrolling) {
-        if (!running) return@LaunchedEffect
+    // "Reduce animation" stops these too, not just the player's mesh: a shelf
+    // that keeps drifting is not what someone who asked for less motion meant.
+    val reduceAnimation by PlayerSettings.reduceAnimation.collectAsStateWithLifecycle()
+    LaunchedEffect(running, periodMs, scrolling, reduceAnimation) {
+        if (!running || reduceAnimation) return@LaunchedEffect
         var last = Long.MIN_VALUE
         while (true) {
             if (scrolling()) {
@@ -678,7 +683,11 @@ private fun loopPhase(periodMs: Int): State<Float> {
             }
             // A nine-second breath doesn't need every vsync, and each frame of
             // it redraws the page under the glass — see MOTION_FRAME_GAP_MS.
-            delay(MOTION_FRAME_GAP_MS)
+            // Counted off the shared clock rather than this loop's own last
+            // frame: every card here runs one of these, and off their own
+            // timers they took a page frame each, in a stream with no gap left
+            // in it at all.
+            delay(nextMotionTickDelayMs())
         }
     }
     return phase
