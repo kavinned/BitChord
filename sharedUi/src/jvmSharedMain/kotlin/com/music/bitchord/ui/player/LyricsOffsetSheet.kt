@@ -78,6 +78,11 @@ internal fun LyricsOffsetSheet(
     modifier: Modifier = Modifier,
 ) {
     val offsetMs by PlayerSettings.lyricsOffsetMs.collectAsStateWithLifecycle()
+    // A drag previews here and is written once on release: the setter persists
+    // to disk, and the offset is quantised to 100 ms, so per-step writes were
+    // dozens of preference writes for one gesture.
+    var pendingOffsetMs by remember { mutableStateOf<Int?>(null) }
+    val shownOffsetMs = pendingOffsetMs ?: offsetMs
     val haptics = rememberHaptics()
     var drag by remember { mutableFloatStateOf(0f) }
     var height by remember { mutableIntStateOf(0) }
@@ -187,7 +192,7 @@ internal fun LyricsOffsetSheet(
                     horizontalAlignment = Alignment.CenterHorizontally,
                 ) {
                     Text(
-                        text = formatOffset(offsetMs),
+                        text = formatOffset(shownOffsetMs),
                         style = MaterialTheme.typography.headlineMedium.copy(
                             fontWeight = FontWeight.SemiBold,
                         ),
@@ -208,8 +213,12 @@ internal fun LyricsOffsetSheet(
                             PlayerSettings.setLyricsOffsetMs(offsetMs - StepMs)
                         }
                         ThinSlider(
-                            value = offsetToFraction(offsetMs),
-                            onValueChange = { PlayerSettings.setLyricsOffsetMs(fractionToOffset(it)) },
+                            value = offsetToFraction(shownOffsetMs),
+                            onValueChange = { pendingOffsetMs = fractionToOffset(it) },
+                            onValueChangeFinished = {
+                                pendingOffsetMs?.let(PlayerSettings::setLyricsOffsetMs)
+                                pendingOffsetMs = null
+                            },
                             idleHeight = 6.dp,
                             activeHeight = 10.dp,
                             modifier = Modifier.weight(1f),
