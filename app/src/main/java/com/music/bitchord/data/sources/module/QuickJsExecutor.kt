@@ -17,7 +17,6 @@ import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
 import org.json.JSONArray
 import org.json.JSONObject
-import java.net.URI
 import java.util.concurrent.TimeUnit
 import java.util.Locale
 
@@ -169,10 +168,13 @@ internal object QuickJsExecutor {
         val qjs = QuickJs.create(Dispatchers.Default)
         try {
             // Module code is third-party and gets no ambient limits by default.
-            // 32 MB of VM heap and 8 s of wall clock bound what one call can
-            // cost the host; the stack ceiling was already here.
+            // 32 MB of VM heap and 20 s of wall clock bound what one call can
+            // cost the host; the stack ceiling was already here. The timeout is
+            // a ceiling on runaway code, not a budget to spend: the slowest
+            // module measured 7.7 s, so 8 s was close enough to it to turn a
+            // slow lookup into a failure.
             qjs.memoryLimit = 32L * 1024 * 1024
-            qjs.evaluationTimeoutMillis = 8_000
+            qjs.evaluationTimeoutMillis = 20_000
             qjs.maxStackSize = 512 * 1024L
             bindConsole(qjs)
             bindAsyncFetch(qjs, fetchBase)
@@ -488,13 +490,12 @@ internal object QuickJsExecutor {
         val absolute = url.startsWith("http://", ignoreCase = true) ||
             url.startsWith("https://", ignoreCase = true)
         if (absolute) {
-            // A module is configured for one server, and a host named in a
-            // response field is how track metadata leaves the device. Anything
-            // relative still resolves through the base below, where it cannot
-            // help but stay on that origin.
-            if (!isSameOrigin(url, base)) {
-                throw IllegalArgumentException("fetch refused: $url is not on the module's origin")
-            }
+            // A module may name any host. Restricting it to the one that served
+            // its JS was tried and dropped: the client below carries no cookie
+            // jar and no auth header, so the fetch has no session to leak, and
+            // a module that wanted to send data elsewhere could equally send it
+            // to its own origin, which such a rule has to allow anyway. What it
+            // did cost was every module whose API lives on a different host.
             return url
         }
         if (base.isEmpty()) return url
@@ -671,27 +672,3 @@ private fun jsStringLiteral(value: String): String =
     JSONObject.quote(value)
         .replace("\u2028", "\\u2028")
         .replace("\u2029", "\\u2029")
-
-/**
- * Whether [url] is on [base]'s origin — scheme, host and port, with the
- * scheme's default port standing in where none is written.
- *
- * Placed top-level rather than in the object so this predicate is a plain
- * JVM seam; the executor itself cannot load without QuickJS.
- */
-internal fun isSameOrigin(url: String, base: String): Boolean = runCatching {
-    val target = URI(url)
-    val origin = URI(base)
-    !target.scheme.isNullOrEmpty() &&
-        !target.host.isNullOrEmpty() &&
-        !origin.host.isNullOrEmpty() &&
-        target.scheme.equals(origin.scheme, ignoreCase = true) &&
-        target.host.equals(origin.host, ignoreCase = true) &&
-        portOf(target) == portOf(origin)
-}.getOrDefault(false)
-
-private fun portOf(uri: URI): Int = when {
-    uri.port != -1 -> uri.port
-    uri.scheme.equals("https", ignoreCase = true) -> 443
-    else -> 80
-}
