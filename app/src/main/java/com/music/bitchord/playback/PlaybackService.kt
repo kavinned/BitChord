@@ -10286,3 +10286,34 @@ private fun withoutPlatformAlac(selector: MediaCodecSelector) =
  * than on the main thread while a player is built.
  */
 private val ffmpegDecodesAlac by lazy { FfmpegLibrary.supportsFormat(MimeTypes.AUDIO_ALAC) }
+import android.os.Process
+        /**
+         * The session is exported, so without this any app on the phone could
+         * browse the account's playlists and search it. The watch is the same
+         * package as this app (see wearos/build.gradle.kts), and the car
+         * controllers are the two the session already recognises for layouts.
+         */
+        private fun isTrusted(session: MediaSession, controller: MediaSession.ControllerInfo): Boolean =
+            controller.packageName == packageName ||
+                session.isAutoCompanionController(controller) ||
+                session.isAutomotiveController(controller)
+
+        /**
+         * Who may hold a controller at all. [isTrusted] plus the system uids:
+         * the lock screen and the Bluetooth stack connect as SystemUI and as
+         * the Bluetooth process, so refusing them would take the user's own
+         * play/pause buttons away without closing anything. Browsing and
+         * search stay on [isTrusted] alone, which is where the library was
+         * being read from.
+         */
+        private fun mayConnect(session: MediaSession, controller: MediaSession.ControllerInfo): Boolean =
+            isTrusted(session, controller) || controller.uid < Process.FIRST_APPLICATION_UID
+
+            if (!mayConnect(session, controller)) return MediaSession.ConnectionResult.reject()
+            if (!isTrusted(session, browser)) {
+                return@future LibraryResult.ofItemList(ImmutableList.of<MediaItem>(), params)
+            }
+            if (!isTrusted(session, browser)) return@future LibraryResult.ofVoid(params)
+            if (!isTrusted(session, browser)) {
+                return@future LibraryResult.ofItemList(ImmutableList.of<MediaItem>(), params)
+            }
