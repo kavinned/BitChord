@@ -2,11 +2,13 @@ package com.music.bitchord.download
 
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotSame
 import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
 import org.junit.rules.TemporaryFolder
+import okhttp3.HttpUrl.Companion.toHttpUrl
 import java.io.ByteArrayOutputStream
 
 /**
@@ -94,6 +96,22 @@ class ManifestFileTest {
         val indexed = Mp4Sidx.ensure(bytes)
         assertNotSame(bytes, indexed)
         assertEquals(listOf("ftyp", "moov", "sidx", "moof", "mdat", "moof", "mdat"), Mp4Boxes.boxes(indexed).map { it.type })
+    }
+
+    /**
+     * The stream's headers ride on a segment request only while it stays on the
+     * manifest's origin; an off-origin segment is fetched without them.
+     */
+    @Test
+    fun `stream headers stay on the manifest's own origin`() {
+        val base = "https://cdn.example.com/hls/manifest.m3u8".toHttpUrl()
+
+        assertTrue(ManifestFile.sameOrigin(base, "https://cdn.example.com/hls/seg-1.m4s".toHttpUrl()))
+        assertTrue(ManifestFile.sameOrigin(base, "https://cdn.example.com/elsewhere/seg.m4s".toHttpUrl()))
+        // Another host, another scheme, another port: three different origins.
+        assertFalse(ManifestFile.sameOrigin(base, "https://evil.example.net/seg.m4s".toHttpUrl()))
+        assertFalse(ManifestFile.sameOrigin(base, "http://cdn.example.com/hls/seg.m4s".toHttpUrl()))
+        assertFalse(ManifestFile.sameOrigin(base, "https://cdn.example.com:8443/hls/seg.m4s".toHttpUrl()))
     }
 
     @Test
