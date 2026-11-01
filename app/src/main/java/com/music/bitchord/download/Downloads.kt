@@ -39,6 +39,8 @@ import kotlinx.serialization.json.Json
 import java.io.OutputStream
 import java.io.File
 import java.util.Locale
+import java.util.concurrent.Executor
+import java.util.concurrent.Executors
 
 /** Where a track is between "not on this device" and "on it". */
 sealed interface DownloadState {
@@ -82,6 +84,17 @@ object Downloads {
     private val serializer = MapSerializer(String.serializer(), String.serializer())
     private val metadataSerializer = MapSerializer(String.serializer(), SavedSongMetadata.serializer())
     private val collectionSerializer = MapSerializer(String.serializer(), SavedCollection.serializer())
+
+    /**
+     * Encoding and writing the whole collection is O(releases) and every edit
+     * asks for it, so [recordCollections] only records the newest map on the
+     * caller's thread. One background writer encodes whatever is newest when it
+     * gets there; a burst of edits costs one encode.
+     */
+    private var collectionWriter: Executor = Executors.newSingleThreadExecutor { runnable ->
+        Thread(runnable, "downloads-collection-save").apply { isDaemon = true }
+    }
+    private var pendingCollections: Map<String, SavedCollection>? = null
 
     private val _active = MutableStateFlow<Map<String, DownloadState>>(emptyMap())
     val active: StateFlow<Map<String, DownloadState>> = _active.asStateFlow()
@@ -158,6 +171,15 @@ object Downloads {
         _collections.value = runCatching {
             json.decodeFromString(collectionSerializer, prefs.getString(KEY_SAVED_COLLECTIONS, null) ?: "{}")
         }.getOrDefault(emptyMap())
+    }
+
+    /** Test-only dependency injection; production uses [init]. */
+    @Synchronized
+    internal fun initForTesting(testPrefs: SharedPreferences, testWriter: Executor) {
+        prefs = testPrefs
+        collectionWriter = testWriter
+        pendingCollections = null
+        _collections.value = emptyMap()
     }
 
     // ---- Asking -------------------------------------------------------------
@@ -634,15 +656,31 @@ object Downloads {
     }
 
     private fun recordCollections(update: (Map<String, SavedCollection>) -> Map<String, SavedCollection>) {
-        synchronized(collectionLock) {
+        if (!::prefs.isInitialized) {
+            synchronized(collectionLock) { _collections.value = update(_collections.value) }
+            return
+        }
+        val queued = synchronized(collectionLock) {
             val map = update(_collections.value)
             _collections.value = map
-            if (::prefs.isInitialized) {
-                prefs.edit()
-                    .putString(KEY_SAVED_COLLECTIONS, json.encodeToString(collectionSerializer, map))
-                    .apply()
-            }
+            val alreadyQueued = pendingCollections != null
+            pendingCollections = map
+            alreadyQueued
         }
+        if (queued) return
+        collectionWriter.execute(::flushPendingCollections)
+    }
+
+    private fun flushPendingCollections() {
+        val map = synchronized(collectionLock) {
+            val next = pendingCollections ?: return
+            pendingCollections = null
+            next
+        }
+        val encoded = runCatching {
+            json.encodeToString(collectionSerializer, map)
+        }.getOrNull() ?: return
+        prefs.edit().putString(KEY_SAVED_COLLECTIONS, encoded).apply()
     }
 
     private val collectionLock = Any()
