@@ -14,6 +14,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.Immutable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -27,6 +28,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.toArgb
 import coil3.compose.LocalPlatformContext
+import com.music.bitchord.ui.components.nextMotionTickDelayMs
 import com.music.bitchord.ui.graphics.FADE_CURVE_STOPS
 import com.music.bitchord.ui.graphics.forPixelAccess
 import com.music.bitchord.ui.graphics.paletteSwatches
@@ -136,8 +138,8 @@ fun MeshGradientBackground(
     }
     val baseColor = animateColorAsState(tuned.first().dimmed(), colorSpec, label = "meshBase")
 
-    // Read in the draw lambda, not here: an Animatable read during draw
-    // invalidates only the drawing, leaving composition out of the loop.
+    // Not read in composition: an Animatable read there would recompose the
+    // whole gradient on every frame of a drift or a crossfade.
     val phase = remember { Animatable(0f) }
     LaunchedEffect(trackKey, reduceAnimation, continuous, animated, paused) {
         when {
@@ -157,6 +159,20 @@ fun MeshGradientBackground(
                 targetValue = phase.value + DRIFT_RADIANS,
                 animationSpec = tween(driftMillis, easing = FastOutSlowInEasing),
             )
+        }
+    }
+
+    // What the draw reads, republished on a slower tick than the animation
+    // produces. The Animatable still runs every vsync — that is where the drift's
+    // easing and its settle come from — but drawing each of its values costs a
+    // frame of this canvas, and of every glass surface sampling the page under it.
+    // Home leaves several of these running at once, which is most of what the app
+    // spends while it is idle on that screen.
+    val shown = remember { mutableFloatStateOf(0f) }
+    LaunchedEffect(Unit) {
+        while (true) {
+            shown.floatValue = phase.value
+            delay(nextMotionTickDelayMs())
         }
     }
 
@@ -188,7 +204,7 @@ fun MeshGradientBackground(
         // which read the animation in composition. It is the same rectangle,
         // drawn one phase later.
         drawRect(color = baseColor.value)
-        val drift = phase.value
+        val drift = shown.floatValue
 
         animatedColors.forEachIndexed { index, color ->
             val anchor = MESH_ANCHORS[index]
