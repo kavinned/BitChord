@@ -52,7 +52,7 @@ object WebDavClient {
         withContext(Dispatchers.IO) {
             runCatching {
                 val target = WebDavConfig.normalizeUrl(url)
-                require(WebDavConfig.isConfigured(target)) { "Enter a http(s) server URL" }
+                require(WebDavConfig.isConfigured(target)) { "Enter an https:// server URL" }
                 val request = propfindRequest(target, depth = "0", username, password)
                 Http.client.newCall(request).execute().use { response ->
                     if (response.code !in 200..299 && response.code != 207) {
@@ -80,29 +80,41 @@ object WebDavClient {
         runCatching {
             val root = WebDavConfig.normalizeUrl(baseUrl)
             require(WebDavConfig.isConfigured(root)) { "WebDAV is not configured" }
-            val foundAudio = LinkedHashMap<String, Entry>()
-            val foundImages = LinkedHashMap<String, Entry>()
-            val dirs = ArrayDeque<String>()
-            dirs.add(root)
-            val visited = HashSet<String>()
-            while (dirs.isNotEmpty() && foundAudio.size < maxFiles) {
-                val dir = dirs.removeFirst()
-                if (!visited.add(dir.lowercase())) continue
-                val entries = propfind(dir, username, password).getOrThrow()
-                for (entry in entries) {
-                    if (entry.isCollection) {
-                        if (!visited.contains(entry.url.lowercase())) dirs.add(entry.url)
-                    } else {
-                        val name = entry.displayName.ifBlank { entry.url }
-                        when {
-                            WebDavConfig.isAudioFile(name) -> foundAudio.putIfAbsent(entry.url, entry)
-                            isImageFile(name) -> foundImages.putIfAbsent(entry.url, entry)
-                        }
+            walkLibrary(root, maxFiles) { dir -> propfind(dir, username, password).getOrThrow() }
+        }
+    }
+
+    /**
+     * The walk, with the fetching left to [entries] so it can be driven without
+     * a server. Breadth-first, each collection visited once, audio and the
+     * pictures filed beside it collected as it goes.
+     */
+    internal suspend fun walkLibrary(
+        root: String,
+        maxFiles: Int,
+        entries: suspend (String) -> List<Entry>,
+    ): Listing {
+        val foundAudio = LinkedHashMap<String, Entry>()
+        val foundImages = LinkedHashMap<String, Entry>()
+        val dirs = ArrayDeque<String>()
+        dirs.add(root)
+        val visited = HashSet<String>()
+        while (dirs.isNotEmpty() && foundAudio.size < maxFiles) {
+            val dir = dirs.removeFirst()
+            if (!visited.add(dir.lowercase())) continue
+            for (entry in entries(dir)) {
+                if (entry.isCollection) {
+                    if (!visited.contains(entry.url.lowercase())) dirs.add(entry.url)
+                } else {
+                    val name = entry.displayName.ifBlank { entry.url }
+                    when {
+                        WebDavConfig.isAudioFile(name) -> foundAudio.putIfAbsent(entry.url, entry)
+                        isImageFile(name) -> foundImages.putIfAbsent(entry.url, entry)
                     }
                 }
             }
-            Listing(foundAudio.values.toList(), foundImages.values.toList())
         }
+        return Listing(foundAudio.values.toList(), foundImages.values.toList())
     }
 
     suspend fun listAudioFiles(

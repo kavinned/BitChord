@@ -40,6 +40,15 @@ class WebDavTest {
     }
 
     @Test
+    fun rejectsCleartextUrls() {
+        // Cleartext is off app-wide, so accepting an http:// address only
+        // defers the failure to a platform block that blames the server.
+        assertFalse(WebDavConfig.isConfigured("http://192.168.1.10:8080/music"))
+        assertFalse(WebDavConfig.isConfigured("HTTP://cloud.example.com/music"))
+        assertTrue(WebDavConfig.isConfigured("https://cloud.example.com/music"))
+    }
+
+    @Test
     fun buildsBasicAuthHeader() {
         assertNull(WebDavConfig.basicAuthHeader("", ""))
         assertEquals("Basic dXNlcjpwYXNz", WebDavConfig.basicAuthHeader("user", "pass"))
@@ -324,53 +333,42 @@ class WebDavTest {
     }
 
     @Test
-    fun `listLibrary collects audio and sibling images`() = runBlocking {
+    fun `listLibrary refuses a cleartext base URL`() = runBlocking {
         MockWebServer().use { server ->
             server.start()
-            val rootXml = multistatus(
-                collection("Music"),
-                file("song.mp3", "audio/mpeg"),
-                file("cover.jpg", "image/jpeg"),
-                collection("Music/Live"),
-            )
-            val liveXml = multistatus(file("Music/Live/take.flac", "audio/flac"))
-            server.dispatcher = object : okhttp3.mockwebserver.Dispatcher() {
-                override fun dispatch(request: okhttp3.mockwebserver.RecordedRequest) =
-                    MockResponse().setResponseCode(207).setBody(
-                        if (request.path?.contains("Live") == true) liveXml else rootXml,
-                    )
-            }
-            val listing = WebDavClient.listLibrary(server.url("/Music").toString(), "", "").getOrThrow()
-            assertEquals(2, listing.audio.size)
-            assertEquals(1, listing.images.size)
-            assertEquals("cover.jpg", listing.images.single().displayName)
+            val result = WebDavClient.listLibrary(server.url("/Music").toString(), "", "")
+            // Refused at validation, before the platform's cleartext block —
+            // and without paying for a request that was always going to fail.
+            assertTrue(result.isFailure)
+            assertEquals(0, server.requestCount)
         }
     }
 
-    private fun multistatus(vararg rows: String): String = """<?xml version="1.0" encoding="utf-8"?>
-<d:multistatus xmlns:d="DAV:">
-${rows.joinToString("\n")}
-</d:multistatus>
-""".trimIndent()
-
-    private fun collection(href: String): String = """
-  <d:response>
-    <d:href>/$href/</d:href>
-    <d:propstat><d:prop>
-      <d:displayname>${href.substringAfterLast('/')}</d:displayname>
-      <d:resourcetype><d:collection/></d:resourcetype>
-    </d:prop></d:propstat>
-  </d:response>""".trimIndent()
-
-    private fun file(href: String, mime: String): String = """
-  <d:response>
-    <d:href>/$href</d:href>
-    <d:propstat><d:prop>
-      <d:displayname>${href.substringAfterLast('/')}</d:displayname>
-      <d:resourcetype/>
-      <d:getcontenttype>$mime</d:getcontenttype>
-    </d:prop></d:propstat>
-  </d:response>""".trimIndent()
+    /**
+     * The traversal itself, driven without a server: audio and the pictures
+     * filed beside it are collected on the way through subfolders.
+     */
+    @Test
+    fun `walkLibrary collects audio and sibling images across folders`() = runBlocking {
+        fun file(url: String) = WebDavClient.Entry(url, url.substringAfterLast('/'), isCollection = false)
+        fun dir(url: String) = WebDavClient.Entry(url, url.substringAfterLast('/'), isCollection = true)
+        val tree = mapOf(
+            "https://dav.example.com/Music" to listOf(
+                dir("https://dav.example.com/Music/Live"),
+                file("https://dav.example.com/Music/song.mp3"),
+                file("https://dav.example.com/Music/cover.jpg"),
+            ),
+            "https://dav.example.com/Music/Live" to listOf(
+                file("https://dav.example.com/Music/Live/take.flac"),
+            ),
+        )
+        val listing = WebDavClient.walkLibrary("https://dav.example.com/Music", 10_000) {
+            tree[it] ?: emptyList()
+        }
+        assertEquals(2, listing.audio.size)
+        assertEquals(1, listing.images.size)
+        assertEquals("cover.jpg", listing.images.single().displayName)
+    }
 
     @Test
     fun `ensureCollection tolerates an existing folder`() = runBlocking {
