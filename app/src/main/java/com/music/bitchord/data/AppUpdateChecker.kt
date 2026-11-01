@@ -2,6 +2,8 @@ package com.music.bitchord.data
 
 import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageInfo
+import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Build
 import android.provider.Settings
@@ -18,6 +20,7 @@ import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonPrimitive
 import okhttp3.Request
 import java.io.File
+import java.security.MessageDigest
 
 /**
  * BitChord ships as a sideloaded APK off GitHub Releases rather than through
@@ -202,8 +205,15 @@ object AppUpdateChecker {
      * the user is sent to that one switch first and taps Install again after.
      * Some TV builds have no such settings screen; there the installer is
      * launched anyway and shows its own "not allowed" prompt with a way in.
+     *
+     * The APK is checked before the installer ever sees it. The system would
+     * refuse a package name or signing key that doesn't match this app, but
+     * only after the user has been asked to install it, and this file came off
+     * a network and a cache directory — so a bad one becomes [DownloadState.Failed]
+     * with the reason instead of an install prompt.
      */
     fun installApk(context: Context, file: File) {
+        if (!verify(context, file)) return
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O &&
             !context.packageManager.canRequestPackageInstalls()
         ) {
@@ -228,6 +238,78 @@ object AppUpdateChecker {
                 ),
         )
     }
+
+    /**
+     * Whether [file] is an APK for this app, signed by a key this app already
+     * trusts.
+     *
+     * Identified by the running package name rather than a literal, because
+     * this project also installs under a benchmark package and launcher
+     * aliases: an update for one of those is not an update for this one.
+     */
+    private fun verify(context: Context, file: File): Boolean {
+        val manager = context.packageManager
+        val flags = signingFlags()
+        val archive = runCatching { manager.getPackageArchiveInfo(file.absolutePath, flags) }
+            .getOrNull() ?: return refuse("The downloaded update could not be read as an APK")
+        if (archive.packageName != context.packageName) {
+            return refuse("The downloaded update is for ${archive.packageName}, not ${context.packageName}")
+        }
+        val installed = runCatching {
+            certDigests(signaturesOf(manager.getPackageInfo(context.packageName, flags)))
+        }.getOrDefault(emptySet())
+        val candidate = runCatching { certDigests(signaturesOf(archive)) }.getOrDefault(emptySet())
+        if (!signedByTrustedKey(installed, candidate)) {
+            return refuse("The downloaded update is not signed by this app's key, so it was not installed")
+        }
+        return true
+    }
+
+    /** The dialog draws a [DownloadState.Failed] message, so a refusal is visible rather than a silent skip. */
+    private fun refuse(message: String): Boolean {
+        _download.value = DownloadState.Failed(message)
+        return false
+    }
+
+    @Suppress("DEPRECATION")
+    private fun signingFlags(): Int =
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+            PackageManager.GET_SIGNING_CERTIFICATES
+        } else {
+            PackageManager.GET_SIGNATURES
+        }
+
+    /** The certificate bytes [info] is signed with, including a rotation's history where the platform reports it. */
+    @Suppress("DEPRECATION")
+    private fun signaturesOf(info: PackageInfo): List<ByteArray> {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+            val signing = info.signingInfo ?: return emptyList()
+            val signatures = signing.apkContentsSigners.orEmpty().toMutableList()
+            // A rotation's older certificates live only in the history, and an
+            // update from an install that predates the rotation is checked
+            // against them.
+            if (!signing.hasMultipleSigners()) {
+                signing.signingCertificateHistory?.forEach { signatures.add(it) }
+            }
+            return signatures.map { it.toByteArray() }
+        }
+        return info.signatures?.map { it.toByteArray() }.orEmpty()
+    }
+
+    /** A certificate reduced to the one form two of them can be compared by without comparing the objects. */
+    internal fun certDigests(certificates: List<ByteArray>): Set<String> = certificates.mapTo(HashSet()) { bytes ->
+        MessageDigest.getInstance("SHA-256").digest(bytes)
+            .joinToString("") { "%02x".format(it.toInt() and 0xFF) }
+    }
+
+    /**
+     * Whether at least one of [candidate]'s certificates is one this app
+     * already runs under. An overlap rather than equality: a key rotation
+     * leaves the old certificate in the installed history while the new APK
+     * carries the new one, and the installer accepts that lineage.
+     */
+    internal fun signedByTrustedKey(installed: Set<String>, candidate: Set<String>): Boolean =
+        candidate.isNotEmpty() && candidate.any { it in installed }
 
     /** A version split into its numeric dotted parts and whether it carries a "-suffix" (e.g. "-beta2"). */
     private data class ParsedVersion(val parts: List<Int>, val isPreRelease: Boolean)
