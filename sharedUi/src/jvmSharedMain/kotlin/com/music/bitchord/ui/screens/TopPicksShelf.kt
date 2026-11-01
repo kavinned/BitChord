@@ -178,6 +178,7 @@ internal fun TopPicksShelf(
                         CompositionLocalProvider(
                             LocalClipSlot provides ClipSlot(
                                 mayPlay = index == owner,
+                                generation = hasClip,
                                 onClipFound = { found -> hasClip[index] = found },
                             ),
                         ) {
@@ -521,7 +522,10 @@ private fun CardMotion(
     val slot = LocalClipSlot.current
     val reportFound by rememberUpdatedState(slot?.onClipFound)
     val found = clip != null
-    DisposableEffect(found) {
+    // A refreshed row builds a new map; a card whose key survived keeps its
+    // composition, so it has to report again into that map or the row thinks
+    // it has no clip and leaves every cover still.
+    DisposableEffect(found, slot?.generation) {
         reportFound?.invoke(found)
         onDispose { reportFound?.invoke(false) }
     }
@@ -616,7 +620,12 @@ internal fun PausedWhileScrolling(state: ScrollableState, content: @Composable (
  * whether it has one at all. A row of release and artist cards each decoding
  * their own video at once was a decoder per card; the row lets one play.
  */
-private class ClipSlot(val mayPlay: Boolean, val onClipFound: (Boolean) -> Unit)
+private class ClipSlot(
+    val mayPlay: Boolean,
+    /** Replaced when the row's clip map is, so every card reports into the new one. */
+    val generation: Any,
+    val onClipFound: (Boolean) -> Unit,
+)
 
 /** The card's [ClipSlot], or null outside a row that shares one out. */
 private val LocalClipSlot = compositionLocalOf<ClipSlot?> { null }
