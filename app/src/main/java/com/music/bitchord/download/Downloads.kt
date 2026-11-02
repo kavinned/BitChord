@@ -165,15 +165,22 @@ object Downloads {
 
     fun init(context: Context) {
         prefs = context.getSharedPreferences("bitchord_settings", Context.MODE_PRIVATE)
-        _saved.value = runCatching {
-            json.decodeFromString(serializer, prefs.getString(KEY_SAVED, null) ?: "{}")
-        }.getOrDefault(emptyMap())
-        _savedMetadata.value = runCatching {
-            json.decodeFromString(metadataSerializer, prefs.getString(KEY_SAVED_METADATA, null) ?: "{}")
-        }.getOrDefault(emptyMap())
-        _collections.value = runCatching {
-            json.decodeFromString(collectionSerializer, prefs.getString(KEY_SAVED_COLLECTIONS, null) ?: "{}")
-        }.getOrDefault(emptyMap())
+        // Three decodes of the whole library, on the record writer's thread: it
+        // is the slowest thing this open does, and nothing reads it before the
+        // first frame — the flows start empty and fill, as every other late
+        // arrival in this file does. Running it there rather than on a thread of
+        // its own means a completion cannot interleave a write with it.
+        recordWriter.execute {
+            _saved.value = runCatching {
+                json.decodeFromString(serializer, prefs.getString(KEY_SAVED, null) ?: "{}")
+            }.getOrDefault(emptyMap())
+            _savedMetadata.value = runCatching {
+                json.decodeFromString(metadataSerializer, prefs.getString(KEY_SAVED_METADATA, null) ?: "{}")
+            }.getOrDefault(emptyMap())
+            _collections.value = runCatching {
+                json.decodeFromString(collectionSerializer, prefs.getString(KEY_SAVED_COLLECTIONS, null) ?: "{}")
+            }.getOrDefault(emptyMap())
+        }
     }
 
     /** Test-only dependency injection; production uses [init]. */
