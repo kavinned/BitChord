@@ -53,6 +53,17 @@ class MediaWidgetPill : AppWidgetProvider() {
         for (id in ids) lastBody.remove(id)
     }
 
+    override fun onDisabled(context: Context) {
+        // The art cache is shared with both big providers. Keep it unless they
+        // are gone too; lastDisc and lastBody are this widget's own.
+        val others = listOf(MediaWidgetSquare::class.java, MediaWidgetWide::class.java)
+        if (!MediaWidget.hasInstances(context, others)) {
+            MediaWidgetArt.clear()
+        }
+        lastDisc = null
+        lastBody.clear()
+    }
+
     private fun renderAsync(context: Context, ids: IntArray) {
         val pending = goAsync()
         val app = context.applicationContext

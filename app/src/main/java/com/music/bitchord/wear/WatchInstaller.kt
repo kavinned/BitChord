@@ -255,7 +255,10 @@ object WatchInstaller {
         }
         stopPairing()
         _pairing.value = WatchPairingState.Searching
-        val manager = app.getSystemService(NsdManager::class.java) ?: return
+        val manager = app.getSystemService(NsdManager::class.java) ?: run {
+            _pairing.value = WatchPairingState.Failed("unsupported")
+            return
+        }
         nsd = manager
         discover(manager, PAIRING_SERVICE) { host, port ->
             pairingHost = host
