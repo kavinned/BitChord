@@ -738,6 +738,17 @@ class PlaybackService : MediaLibraryService() {
 
     private val scope = CoroutineScope(Dispatchers.Main + SupervisorJob())
 
+    /**
+     * One ordered lane for the two durable queue writes below.
+     *
+     * They rewrite different preference files, so the order between them does
+     * not matter — but keeping them on one lane means a burst of radio-queue
+     * commits cannot interleave with itself. The clears stay where they are,
+     * on the caller's thread: a `clear` applied later than a save wipes it, and
+     * the plain `apply` saves on the state-change path are not on this lane.
+     */
+    private val durableWriteDispatcher = Dispatchers.IO.limitedParallelism(1)
+
     /** Canonical context owner for the active local bounded album/playlist. */
     private val boundedContextRegistry = ContextRegistry { snapshot ->
         scope.launch {
@@ -6647,30 +6658,40 @@ class PlaybackService : MediaLibraryService() {
         if (ListenTogether.state.value.inParty) return
         if (player.mediaItemCount == 0) {
             persistedQueueStart = 0
+            // Synchronous on purpose: a clear that ran after a later save would
+            // wipe it, and the saves on the state-change path are not ordered
+            // against this lane.
             LastPlayed.clearImmediately()
             BoundedContextPersistence.clearImmediately()
             return
         }
         val range = LastPlayed.window(player.mediaItemCount, player.currentMediaItemIndex)
+        if (range.isEmpty()) return
         persistedQueueStart = range.first
-        LastPlayed.saveQueueImmediately(
-            songs = (0 until player.mediaItemCount).map { player.getMediaItemAt(it).toSong() },
-            index = player.currentMediaItemIndex,
-            positionMs = player.currentPosition,
-        )
-        saveBoundedContextSnapshot(player, immediately = true)
+        // ExoPlayer may be read only from this thread, so capture the bounded
+        // window first. A kill inside the hop below loses this one write: a
+        // cold start on the pre-radio queue, exactly what a kill a millisecond
+        // earlier already cost.
+        val songs = range.map { player.getMediaItemAt(it).toSong() }
+        val index = player.currentMediaItemIndex - range.first
+        val positionMs = player.currentPosition
+        val contextState = buildBoundedContextState(player)
+        scope.launch(durableWriteDispatcher) {
+            LastPlayed.saveQueueImmediately(songs = songs, index = index, positionMs = positionMs)
+            contextState?.let(BoundedContextPersistence::saveImmediately)
+        }
     }
 
-    /** Capture logical state and only the materialized bounded projection. */
-    private fun saveBoundedContextSnapshot(player: ExoPlayer, immediately: Boolean = false) {
-        if (ListenTogether.state.value.inParty) return
-        val window = boundedContextWindow ?: return
-        val context = boundedContextRegistry.snapshot() ?: return
-        val source = boundedContextSource ?: return
-        if (context.contextToken != boundedContextToken || context.songs.isEmpty()) return
+    /** Read the player and assemble the bounded projection, without touching disk. */
+    private fun buildBoundedContextState(player: ExoPlayer): BoundedContextPersistence.State? {
+        if (ListenTogether.state.value.inParty) return null
+        val window = boundedContextWindow ?: return null
+        val context = boundedContextRegistry.snapshot() ?: return null
+        val source = boundedContextSource ?: return null
+        if (context.contextToken != boundedContextToken || context.songs.isEmpty()) return null
         val currentIndex = player.currentMediaItemIndex.coerceIn(0, player.mediaItemCount - 1)
         val range = LastPlayed.window(player.mediaItemCount, currentIndex)
-        if (range.isEmpty()) return
+        if (range.isEmpty()) return null
         val entries = range.map { index ->
             val item = player.getMediaItemAt(index)
             BoundedContextPersistence.Entry(
@@ -6679,7 +6700,7 @@ class PlaybackService : MediaLibraryService() {
                 cycleId = if (item.queueTier == QueueTier.CONTEXT) item.contextCycleId else null,
             )
         }
-        val state = BoundedContextPersistence.State(
+        return BoundedContextPersistence.State(
             context = context,
             source = source,
             window = window.snapshot(),
@@ -6687,6 +6708,11 @@ class PlaybackService : MediaLibraryService() {
             currentIndex = currentIndex - range.first,
             positionMs = player.currentPosition,
         )
+    }
+
+    /** Capture logical state and only the materialized bounded projection. */
+    private fun saveBoundedContextSnapshot(player: ExoPlayer, immediately: Boolean = false) {
+        val state = buildBoundedContextState(player) ?: return
         if (immediately) BoundedContextPersistence.saveImmediately(state) else BoundedContextPersistence.save(state)
     }
 
@@ -6701,6 +6727,7 @@ class PlaybackService : MediaLibraryService() {
         repeatAllStashSeed = null
         sessionSongHistory.clear()
         persistedQueueStart = 0
+        // Synchronous for the same reason as the empty-queue branch above.
         LastPlayed.clearImmediately()
     }
 
