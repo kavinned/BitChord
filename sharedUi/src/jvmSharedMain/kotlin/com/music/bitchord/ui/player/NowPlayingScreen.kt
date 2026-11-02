@@ -1453,9 +1453,17 @@ fun NowPlayingScreen(
     val clipBottom = canvasBottom(clipPortrait)
     // Match the old hero's fade height in physical pixels, not its much larger
     // percentage of a portrait video. The mask ends at the real video bottom.
-    val clipFadeFraction = if (clipBottom > 0.dp) {
-        (heroHeight.value * HERO_FADE_FRACTION / clipBottom.value).coerceIn(0f, 1f)
-    } else 0f
+    //
+    // A lambda rather than a value: [heroHeight] is written by the layout pass,
+    // and the clip only asks for this as it updates. Worked out here and it
+    // would recompose this whole screen on every banner resize for a number
+    // that is spent later, in the view; worked out where it is called and the
+    // layout write never reaches composition at all.
+    val clipFadeFraction: () -> Float = {
+        if (clipBottom > 0.dp) {
+            (heroHeight.value * HERO_FADE_FRACTION / clipBottom.value).coerceIn(0f, 1f)
+        } else 0f
+    }
     val statusBarTop = stableStatusBarInsets().asPaddingValues().calculateTopPadding()
     // What sits between the status bar and the artwork: the drag strip. Read
     // in three places — the strip itself,
@@ -2374,10 +2382,12 @@ fun NowPlayingScreen(
                                 meshRefreshMs
                             },
                             onCoverChanged = { canvasCover.floatValue = it },
-                            bottomFade = when {
-                                clipFullscreen -> 0f
-                                clipPortrait -> clipFadeFraction
-                                else -> HERO_FADE_FRACTION
+                            bottomFade = {
+                                when {
+                                    clipFullscreen -> 0f
+                                    clipPortrait -> clipFadeFraction()
+                                    else -> HERO_FADE_FRACTION
+                                }
                             },
                             bottomFadeEndPx = if (clipPortrait) with(density) { clipBottom.toPx() }
                                 else null,

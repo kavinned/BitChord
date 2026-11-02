@@ -194,8 +194,10 @@ internal fun AndroidCanvasArtworkPlayer(
      * Share of the clip's height, measured up from its bottom edge, over which
      * it dissolves to nothing — 0 for a hard edge. See [setBottomFade] for why
      * this is a parameter here rather than a mask the caller could draw.
+     * A lambda so it is asked for in the view's update rather than read while
+     * the caller composes — see the update block below.
      */
-    bottomFade: Float = 0f,
+    bottomFade: () -> Float = { 0f },
     /** Optional end of the fade in view pixels; defaults to the view's bottom edge. */
     bottomFadeEndPx: Float? = null,
     /**
@@ -575,6 +577,11 @@ internal fun AndroidCanvasArtworkPlayer(
         update = { frame ->
             val view = frame.getChildAt(0) as TextureView
             val applied = frame.applied
+            // Asked here, beside [presentationAlpha], rather than carried in as
+            // a value: the caller's height is written by its layout pass, and a
+            // value would have to be read while it composes, recomposing the
+            // player around the clip for a fade only this block ever spends.
+            val fade = bottomFade()
             // Set on the view itself. A Compose alpha layer over a TextureView
             // is not reliably composited, and this is the same fade either way.
             view.alpha = if (contentMode == CanvasContentMode.FIT_PORTRAIT && clipAspect <= 0f) {
@@ -594,11 +601,11 @@ internal fun AndroidCanvasArtworkPlayer(
                 view.applyContentTransform(clipAspect, contentMode, alignPortraitTop)
             }
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-                if (applied.fadeDiffers(bottomFade, bounds, bottomFadeEndPx)) {
-                    view.setBottomFade(bottomFade, bounds, bottomFadeEndPx)
+                if (applied.fadeDiffers(fade, bounds, bottomFadeEndPx)) {
+                    view.setBottomFade(fade, bounds, bottomFadeEndPx)
                 }
             } else {
-                frame.fadeFraction = bottomFade
+                frame.fadeFraction = fade
                 frame.fadeEndPx = bottomFadeEndPx
             }
         },

@@ -478,7 +478,7 @@ private fun ReleaseArt(url: String?, modifier: Modifier, motion: CardMotionSourc
         CardMotion(
             motion,
             Modifier.fillMaxWidth().aspectRatio(1f),
-            bottomFade = 0.22f,
+            bottomFade = { 0.22f },
             onCover = { covered = it },
         )
     }
@@ -512,7 +512,7 @@ private fun TopPick.artistMotion(): CardMotionSource? {
 private fun CardMotion(
     source: CardMotionSource?,
     modifier: Modifier,
-    bottomFade: Float = 0f,
+    bottomFade: () -> Float = { 0f },
     onCover: (Float) -> Unit = {},
 ) {
     if (source == null || !LocalArtworkImages.current) return
