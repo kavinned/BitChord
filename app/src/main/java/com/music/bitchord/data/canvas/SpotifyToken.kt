@@ -142,9 +142,13 @@ internal object SpotifyToken {
         }
         // The player caches its token in web storage and skips a fresh
         // /api/token request if a live one is already sitting there, leaving
-        // the hook with nothing to see — wipe storage so every harvest forces
-        // a real mint.
-        runCatching { WebStorage.getInstance().deleteAllData() }
+        // the hook with nothing to see — wipe Spotify's storage so every
+        // harvest forces a real mint. Scoped to Spotify: the jar is
+        // process-wide and other origins' storage is none of our business.
+        runCatching {
+            WebStorage.getInstance().deleteOrigin("https://open.spotify.com")
+            WebStorage.getInstance().deleteOrigin("https://accounts.spotify.com")
+        }
 
         var webView: WebView? = null
         return try {
@@ -180,6 +184,12 @@ internal object SpotifyToken {
                 webView?.removeJavascriptInterface(BRIDGE_NAME)
                 webView?.stopLoading()
                 webView?.destroy()
+                // The jar outlives the WebView and persists to disk, so the
+                // listener's session cookie has to be expired here rather
+                // than left behind for the next reader of the jar.
+                cookieManager.setCookie("https://open.spotify.com/", "sp_dc=; Max-Age=0; Domain=.spotify.com; Path=/; Secure")
+                cookieManager.setCookie("https://accounts.spotify.com/", "sp_dc=; Max-Age=0; Domain=.spotify.com; Path=/; Secure")
+                cookieManager.flush()
             }
         }
     }
