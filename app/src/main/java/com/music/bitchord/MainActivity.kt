@@ -822,11 +822,7 @@ private fun BitChordApp(
         dark = !darkTheme && !showNowPlaying && route != AppRoute.Replay && replayStory == null && !onboardingVisible,
     )
 
-    val homeState by viewModel.home.collectAsStateWithLifecycle()
-    val homeLoadingMore by viewModel.homeLoadingMore.collectAsStateWithLifecycle()
-    val homeRecentlyPlayedLoading by viewModel.homeRecentlyPlayedLoading.collectAsStateWithLifecycle()
     val topPicks by viewModel.topPicks.collectAsStateWithLifecycle()
-    val topPicksLoading by viewModel.topPicksLoading.collectAsStateWithLifecycle()
 
     // The top bar's icon is the quiet, always-there nudge; this is the
     // once-per-launch popup version of the same news. `updateDialogShown`
@@ -854,14 +850,9 @@ private fun BitChordApp(
     }
     val query by viewModel.query.collectAsStateWithLifecycle()
     val results by viewModel.results.collectAsStateWithLifecycle()
-    val exploreState by viewModel.explore.collectAsStateWithLifecycle()
     val selectedMoodGenre by viewModel.selectedMoodGenre.collectAsStateWithLifecycle()
-    val moodGenreShelves by viewModel.moodGenreShelves.collectAsStateWithLifecycle()
-    val libraryState by viewModel.library.collectAsStateWithLifecycle()
     val filter by viewModel.filter.collectAsStateWithLifecycle()
     val searchSource by viewModel.searchSource.collectAsStateWithLifecycle()
-    val libraryResults by viewModel.libraryResults.collectAsStateWithLifecycle()
-    val addonResults by viewModel.addonResults.collectAsStateWithLifecycle()
     // Collected rather than read once, so addon rows in search re-dim the
     // moment the quality setting, the connection or the watch's cap moves.
     val addonCeiling = AppSettings.ceilingFor(
@@ -895,20 +886,13 @@ private fun BitChordApp(
         }
     }
     val account by viewModel.account.collectAsStateWithLifecycle()
-    val selectedChannelName by viewModel.selectedChannelName.collectAsStateWithLifecycle()
     val googleAccounts by viewModel.googleAccounts.collectAsStateWithLifecycle()
     val activeAccountId by viewModel.activeAccountId.collectAsStateWithLifecycle()
     val activeProfileId by viewModel.activeProfileId.collectAsStateWithLifecycle()
-    val historyState by viewModel.history.collectAsStateWithLifecycle()
     val lyrics by viewModel.lyrics.collectAsStateWithLifecycle()
     val lyricsSource by viewModel.lyricsSource.collectAsStateWithLifecycle()
     val lyricsChecked by viewModel.lyricsChecked.collectAsStateWithLifecycle()
     val lyricsProviderStates by viewModel.lyricsProviderStates.collectAsStateWithLifecycle()
-    val searchHistory by viewModel.searchHistory.collectAsStateWithLifecycle()
-    val searchSuggestions by viewModel.suggestions.collectAsStateWithLifecycle()
-    val searchLoadingMore by viewModel.searchLoadingMore.collectAsStateWithLifecycle()
-    val searchScrollReset by viewModel.searchScrollReset.collectAsStateWithLifecycle()
-    val releaseLibrary by viewModel.releaseLibrary.collectAsStateWithLifecycle()
     // Local Music, Downloads and the other device folders draw as release
     // pages, but they have no artwork to wash the top inset in, so they keep
     // the plain bar; their top bar trades the overflow for a sort-and-view
@@ -2936,6 +2920,31 @@ private fun BitChordApp(
                         detailListStates.getOrPut(key) { LazyListState() }
                     }
                     val pageContent: @Composable () -> Unit = {
+                        // Collected here, where they are read, rather than at
+                        // the top of BitChordApp. `collectAsStateWithLifecycle`
+                        // reads its state where the value is declared, so a
+                        // declaration up there put every one of these emissions
+                        // in the app's own restart scope — a home row landing
+                        // re-ran this whole screen. Down here the read lands in
+                        // the page slot, which is the only thing they change.
+                        // The ones still declared above are the ones the mini
+                        // player, the sheets and the search overlay read too.
+                        val homeState by viewModel.home.collectAsStateWithLifecycle()
+                        val homeLoadingMore by viewModel.homeLoadingMore.collectAsStateWithLifecycle()
+                        val homeRecentlyPlayedLoading by viewModel.homeRecentlyPlayedLoading.collectAsStateWithLifecycle()
+                        val topPicksLoading by viewModel.topPicksLoading.collectAsStateWithLifecycle()
+                        val exploreState by viewModel.explore.collectAsStateWithLifecycle()
+                        val moodGenreShelves by viewModel.moodGenreShelves.collectAsStateWithLifecycle()
+                        val libraryState by viewModel.library.collectAsStateWithLifecycle()
+                        val libraryResults by viewModel.libraryResults.collectAsStateWithLifecycle()
+                        val addonResults by viewModel.addonResults.collectAsStateWithLifecycle()
+                        val selectedChannelName by viewModel.selectedChannelName.collectAsStateWithLifecycle()
+                        val historyState by viewModel.history.collectAsStateWithLifecycle()
+                        val searchHistory by viewModel.searchHistory.collectAsStateWithLifecycle()
+                        val searchSuggestions by viewModel.suggestions.collectAsStateWithLifecycle()
+                        val searchLoadingMore by viewModel.searchLoadingMore.collectAsStateWithLifecycle()
+                        val searchScrollReset by viewModel.searchScrollReset.collectAsStateWithLifecycle()
+                        val releaseLibrary by viewModel.releaseLibrary.collectAsStateWithLifecycle()
                         if (pageRoute == AppRoute.History) {
                             HistoryScreen(
                                 state = historyState,
