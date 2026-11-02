@@ -1639,32 +1639,49 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     /**
+     * Bumped by every artwork pass. A thumbnail from a list that has since been
+     * replaced backs off rather than painting onto the new one.
+     */
+    private val artworkGeneration = AtomicLong(0L)
+
+    /**
      * Category buttons do not carry thumbnails themselves. Resolve a small
      * number at a time from the shelves they open, so the grid gains real art
      * without saturating the browse client or delaying the category list.
+     *
+     * Publishing is coalesced rather than done per thumbnail: one emission per
+     * thumbnail is one full-grid recomposition per thumbnail, and the grid is
+     * the same list underneath — only one cell's art actually changed.
      */
     private fun loadMoodGenreArtwork(sections: List<MoodGenreSection>) {
+        val generation = artworkGeneration.incrementAndGet()
         viewModelScope.launch {
             val limiter = Semaphore(4)
+            val resolved = ConcurrentHashMap<String, String>()
+            var lastPublish = 0L
+            fun publish() {
+                if (artworkGeneration.get() != generation) return
+                val current = (_explore.value as? UiState.Success)?.data ?: return
+                _explore.value = UiState.Success(applyArtwork(current, resolved))
+            }
             coroutineScope {
                 sections.flatMap(MoodGenreSection::items).forEach { item ->
                     launch {
+                        if (artworkGeneration.get() != generation) return@launch
                         val artwork = limiter.withPermit {
                             YtMusicRepository.moodGenreArtwork(item.browseId, item.params).getOrNull()
                         } ?: return@launch
-                        val current = (_explore.value as? UiState.Success)?.data ?: return@launch
-                        _explore.value = UiState.Success(current.map { section ->
-                            section.copy(items = section.items.map { currentItem ->
-                                if (currentItem.browseId == item.browseId && currentItem.params == item.params) {
-                                    currentItem.copy(thumbnailUrl = artwork)
-                                } else {
-                                    currentItem
-                                }
-                            })
-                        })
+                        if (artworkGeneration.get() != generation) return@launch
+                        resolved["${item.browseId}|${item.params}"] = artwork
+                        val now = System.currentTimeMillis()
+                        if (now - lastPublish >= ARTWORK_PUBLISH_MS) {
+                            lastPublish = now
+                            publish()
+                        }
                     }
                 }
             }
+            publish()
         }
     }
 
@@ -2574,6 +2591,9 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     companion object {
         /** Today's Top Picks row, kept so the next launch paints it before any request. */
         private const val TOP_PICKS_FILE = "top_picks_v4.json"
+
+        /** How often in-flight Explore artwork may be published; see [loadMoodGenreArtwork]. */
+        private const val ARTWORK_PUBLISH_MS = 150L
 
         /** Per-addon budget for the Addons search tab; a slow addon is left out, not waited on. */
         private const val ADDON_SEARCH_TIMEOUT_MS = 12_000L
@@ -3628,6 +3648,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         // them would show the next signed-in user someone else's hearts.
         likedSyncJob?.cancel()
         LikeState.clear()
+        _playlistsLoading.value = false
         _playlists.value = emptyList()
         _playlistOwned.value = emptyMap()
         ownershipInFlight.clear()
@@ -3687,3 +3708,38 @@ internal fun accountDetailsUpdate(
 /** True when [open] is still the category that a response for [captured] was fetched for. */
 internal fun isStillOpenCategory(captured: MoodGenre, open: MoodGenre?): Boolean =
     open != null && open.browseId == captured.browseId && open.params == captured.params
+
+/**
+ * The Explore sections with [artwork] applied by category identity.
+ *
+ * Every item and section that gained nothing comes back as the same instance:
+ * Compose skips a node whose inputs did not change, so rebuilding a section
+ * because a category in a different section resolved would recompose it for
+ * no reason.
+ */
+internal fun applyArtwork(
+    sections: List<MoodGenreSection>,
+    artwork: Map<String, String>,
+): List<MoodGenreSection> {
+    var changed = false
+    val updated = sections.map { section ->
+        var sectionChanged = false
+        val items = section.items.map { item ->
+            val url = artwork["${item.browseId}|${item.params}"] ?: return@map item
+            if (url == item.thumbnailUrl) {
+                item
+            } else {
+                sectionChanged = true
+                item.copy(thumbnailUrl = url)
+            }
+        }
+        if (sectionChanged) {
+            changed = true
+            section.copy(items = items)
+        } else {
+            section
+        }
+    }
+    return if (changed) updated else sections
+}
+
