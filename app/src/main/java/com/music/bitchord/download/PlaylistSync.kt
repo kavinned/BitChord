@@ -69,11 +69,17 @@ object PlaylistSync {
     /** How stale the last whole check may be when the app comes to the front. */
     private const val CATCH_UP_MILLIS = 6L * 60 * 60 * 1000
 
+    /** How soon a check that could not read every playlist is due again. */
+    private const val RETRY_MILLIS = 5L * 60 * 1000
+
     /** The most one playlist may fetch without being asked; about 1.7 GB of lossless. */
     internal const val ASK_ABOVE = 50
 
     /** Between requests for pages and for playlists: none of this is in a hurry. */
     private const val PAUSE_MILLIS = 400L
+
+    /** How many pages in a row may add nothing before the walk stops counting on them. */
+    private const val MAX_EMPTY_PAGES = 2
 
     /** One check at a time, however many of the triggers fire together. */
     private val running = Mutex()
@@ -152,6 +158,14 @@ object PlaylistSync {
     private fun catchUpDue(context: Context): Boolean =
         System.currentTimeMillis() - prefs(context).getLong(KEY_LAST_CHECK, 0L) >= CATCH_UP_MILLIS
 
+    /**
+     * The stamp a check leaves. A whole check waits the full [CATCH_UP_MILLIS];
+     * one that could not read every playlist is back-dated so it is due again
+     * after [RETRY_MILLIS], without needing to remember which playlist failed.
+     */
+    internal fun lastCheckStamp(whole: Boolean, now: Long): Long =
+        if (whole) now else now - CATCH_UP_MILLIS + RETRY_MILLIS
+
     private fun prefs(context: Context) = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
 
     // ---- A check ------------------------------------------------------------
@@ -159,8 +173,10 @@ object PlaylistSync {
     /**
      * Goes through every eligible playlist in turn.
      *
-     * Only a check that read every playlist to its end is stamped as done, so
-     * one that failed partway is due again the next time the app is opened.
+     * The check is stamped either way: a whole one waits the full catch-up
+     * period, while one that could not read every playlist is back-dated so it
+     * comes due again shortly. That keeps one unreadable playlist from making
+     * every launch a full sync.
      */
     internal suspend fun check(context: Context, approved: Boolean) {
         // An approval waits its turn. Anything else would only repeat the check
@@ -168,6 +184,8 @@ object PlaylistSync {
         if (approved) running.lock() else if (!running.tryLock()) return
         try {
             if (!storageWritable(context)) return
+            // Whether every playlist was read to its end, which now only chooses
+            // the stamp: a partial check retries soon rather than every launch.
             var whole = true
             Downloads.collections.value.keys.forEach { id ->
                 if (!AppSettings.syncDownloadedPlaylists.value || !AppSettings.downloadsAllowedNow) return
@@ -181,7 +199,9 @@ object PlaylistSync {
                 update(context, record, listing, approved)
                 delay(PAUSE_MILLIS)
             }
-            if (whole) prefs(context).edit().putLong(KEY_LAST_CHECK, System.currentTimeMillis()).apply()
+            prefs(context).edit()
+                .putLong(KEY_LAST_CHECK, lastCheckStamp(whole, System.currentTimeMillis()))
+                .apply()
         } finally {
             running.unlock()
         }
@@ -239,8 +259,10 @@ object PlaylistSync {
 
     /**
      * @property complete whether this reached the end of the playlist. False
-     *   when a request failed; [songs] is then whatever came before it, which is
-     *   still worth acting on since a check only ever adds.
+     *   when a request failed, or when the walk could not get past a repeated
+     *   token or a run of pages that added nothing; [songs] is then whatever
+     *   came before it, which is still worth acting on since a check only ever
+     *   adds.
      */
     internal class Listing(val songs: List<Song>, val complete: Boolean, val cover: String? = null)
 
@@ -264,15 +286,26 @@ object PlaylistSync {
         val songs = LinkedHashMap<String, Song>()
         opening.songs.forEach { songs.putIfAbsent(it.videoId, it) }
         var next = opening.continuation
+        val followed = HashSet<String>()
+        var emptyPages = 0
         while (next != null) {
+            // A token already followed is a loop, not a longer playlist.
+            if (!followed.add(next)) return Listing(songs.values.toList(), complete = false, cover)
             delay(PAUSE_MILLIS)
             val page = more(next).getOrNull() ?: return Listing(songs.values.toList(), complete = false, cover)
             val before = songs.size
             page.songs.forEach { songs.putIfAbsent(it.videoId, it) }
-            // A page with nothing new is a feed that has looped back on itself
-            // with a token still attached, not one with more to give.
-            if (songs.size == before) break
+            // A page with nothing new is followed rather than trusted as the end:
+            // a feed can repeat a page with a token still attached, and the
+            // tracks after that repeat are real. Stopping there would hide them
+            // on this check and, since every check starts from page one, on all
+            // the ones after it too. Only a token seen before, or too many empty
+            // pages in a row, means the walk cannot get any further.
+            emptyPages = if (songs.size == before) emptyPages + 1 else 0
             next = page.continuation
+            if (next != null && emptyPages >= MAX_EMPTY_PAGES) {
+                return Listing(songs.values.toList(), complete = false, cover)
+            }
         }
         return Listing(songs.values.toList(), complete = true, cover)
     }
