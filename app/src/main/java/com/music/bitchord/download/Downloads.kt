@@ -41,6 +41,9 @@ import java.io.File
 import java.util.Locale
 import java.util.concurrent.Executor
 import java.util.concurrent.Executors
+import java.util.concurrent.ScheduledExecutorService
+import java.util.concurrent.ScheduledFuture
+import java.util.concurrent.TimeUnit
 
 /** Where a track is between "not on this device" and "on it". */
 sealed interface DownloadState {
@@ -354,6 +357,10 @@ object Downloads {
                     DownloadSession.forget(id)
                 }
             }
+            // The batch is over, whether it ran out or was called off: do not
+            // leave the last track's record sitting behind a window nobody is
+            // now going to reach.
+            flushRecord()
         }
         return handled
     }
@@ -432,7 +439,9 @@ object Downloads {
     }
 
     private fun forget(videoId: String) {
-        record(saved = { it - videoId }, meta = { it - videoId })
+        // A deletion cannot wait out the coalescer: a record that outlives its
+        // file is worse than a record written a moment late.
+        record(saved = { it - videoId }, meta = { it - videoId }, flush = true)
     }
 
     /**
@@ -759,7 +768,7 @@ object Downloads {
     }
 
     /**
-     * Apply [saved] and [meta] to the two records and write the result down.
+     * Apply [saved] and [meta] to the two records, and have them written down.
      *
      * Takes transforms rather than finished maps because several downloads
      * finish at once now, and "read the map, add my track, store it back" run
@@ -767,23 +776,87 @@ object Downloads {
      * since this is the only record that a file was written. Both flows are
      * updated compare-and-set, and the persist is serialised so the copy that
      * reaches disk is never older than one already written.
+     *
+     * The in-memory update is not deferred — a reader of [saved] has to see a
+     * finished download the moment it is finishable — but the encode and write
+     * are, for the reason [recordWriter] gives. [flush] opts a caller out of
+     * that wait; a deletion is the one that has to.
      */
     private fun record(
         saved: (Map<String, String>) -> Map<String, String>,
         meta: (Map<String, SavedSongMetadata>) -> Map<String, SavedSongMetadata>,
+        flush: Boolean = false,
     ) {
-        val savedMap = _saved.updateAndGet(saved)
-        val metaMap = _savedMetadata.updateAndGet(meta)
+        _saved.updateAndGet(saved)
+        _savedMetadata.updateAndGet(meta)
+        if (!::prefs.isInitialized) return
+        if (flush) flushRecord() else scheduleRecordWrite()
+    }
+
+    /**
+     * Encode and write the two records, on a trailing edge.
+     *
+     * The encode is O(library) and a bulk download finishes one track at a
+     * time, so writing on every completion turned a 300-track album into 300
+     * encodes of a map growing to 300 entries — megabytes of JSON and hundreds
+     * of preference writes for a single batch. Nothing waits on the write:
+     * [saved] was already updated, and the UI reads that, not the preference.
+     *
+     * A real trailing edge rather than a fixed interval, so a burst costs one
+     * write however long the burst lasts: each [record] cancels the pending
+     * write and schedules a fresh one, and the write that finally runs reads
+     * [_saved] and [_savedMetadata] at that moment rather than a snapshot taken
+     * when it was queued, so nothing that finished in between is lost.
+     *
+     * A plain [Executor] would do for the encode but not for the delay — hence
+     * a scheduled one, sized like the collection writer beside it.
+     */
+    private val recordWriter: ScheduledExecutorService =
+        Executors.newSingleThreadScheduledExecutor { runnable ->
+            Thread(runnable, "downloads-record-save").apply { isDaemon = true }
+        }
+
+    /** The write the coalescer is holding; guarded by [recordLock]. */
+    private var recordFuture: ScheduledFuture<*>? = null
+
+    private fun scheduleRecordWrite() {
+        synchronized(recordLock) {
+            recordFuture?.cancel(false)
+            recordFuture = recordWriter.schedule(::writeRecord, RECORD_COALESCE_MS, TimeUnit.MILLISECONDS)
+        }
+    }
+
+    /**
+     * Write the current maps now, instead of waiting out the coalescer.
+     *
+     * Called where waiting is not safe: a deletion, the end of a batch, and
+     * service teardown, after which the process can go away with the write
+     * still queued. If the scheduled write is already running, the cancel is a
+     * no-op and this write simply follows it under [recordLock] with the newest
+     * maps, so a flush is never lost to one already in flight.
+     *
+     * A crash inside the window loses the record of a file that is still on
+     * disk, and the app fetches that track again later. That is the same class
+     * of loss `.apply()` already takes; the window is wider, not new.
+     */
+    internal fun flushRecord() {
+        synchronized(recordLock) { recordFuture?.cancel(false) }
+        writeRecord()
+    }
+
+    private fun writeRecord() {
         if (!::prefs.isInitialized) return
         synchronized(recordLock) {
             prefs.edit()
-                .putString(KEY_SAVED, json.encodeToString(serializer, savedMap))
-                .putString(KEY_SAVED_METADATA, json.encodeToString(metadataSerializer, metaMap))
+                .putString(KEY_SAVED, json.encodeToString(serializer, _saved.value))
+                .putString(KEY_SAVED_METADATA, json.encodeToString(metadataSerializer, _savedMetadata.value))
                 .apply()
         }
     }
 
     private val recordLock = Any()
+
+    private const val RECORD_COALESCE_MS = 500L
 
     /** Returns all downloaded songs whose files still exist on disk. */
     suspend fun getDownloadedSongs(context: Context): List<Song> = withContext(Dispatchers.IO) {
@@ -957,6 +1030,10 @@ object Downloads {
      */
     internal fun onStopped() {
         synchronized(lock) { running.clear() }
+        // The service is going away and may take the process with it, so a
+        // record the coalescer is still holding would be lost with the file it
+        // describes still on disk.
+        flushRecord()
     }
 
     /**
