@@ -2549,8 +2549,9 @@ class CrossfadeController(
                 // what is heard, and runs for as long as it is: both have to
                 // have played out before the next reading means anything.
                 val port = session.inPort
-                val lead = if (port.processedUs != C.TIME_UNSET && port.positionUs != C.TIME_UNSET) {
-                    ((port.processedUs - port.positionUs).coerceAtLeast(0L)) / 1e6
+                val reading = port.snapshot()
+                val lead = if (port.processedUs != C.TIME_UNSET && reading.us != C.TIME_UNSET) {
+                    ((port.processedUs - reading.us).coerceAtLeast(0L)) / 1e6
                 } else {
                     1.0
                 }

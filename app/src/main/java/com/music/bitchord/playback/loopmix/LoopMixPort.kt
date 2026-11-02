@@ -94,19 +94,43 @@ class LoopMixPort {
     @Volatile var interrupted: Boolean = false
 
     /**
+     * One position reading: track µs and the [System.nanoTime] it was taken at.
+     * Immutable, so the two always belong to the same reading.
+     */
+    class Reading(val us: Long, val nanos: Long)
+
+    /**
      * The last position reading, in track µs, and when it was taken
      * ([System.nanoTime]); the player's own clock, at sub-millisecond
      * resolution, read on every renderer tick.
+     *
+     * Published as one reference rather than two fields: a reader that took the
+     * position and the timestamp in separate reads could pair this tick's
+     * position with the next tick's time, and [presentedSeconds] would
+     * extrapolate from the wrong moment by a whole tick. The cost is one small
+     * allocation per publish on the audio thread, and a publish happens per
+     * renderer tick — tens a second, not per sample — which is nothing beside
+     * a torn pair.
      */
-    @Volatile var positionUs: Long = C.TIME_UNSET
-    @Volatile var positionNanos: Long = 0L
+    @Volatile private var latest = Reading(C.TIME_UNSET, 0L)
+
+    fun publish(positionUs: Long, nanos: Long) {
+        latest = Reading(positionUs, nanos)
+    }
+
+    /** The latest reading, as one consistent pair. */
+    fun snapshot(): Reading = latest
+
+    /** Convenience reads of the latest snapshot; use [snapshot] when both are needed. */
+    val positionUs: Long get() = latest.us
+    val positionNanos: Long get() = latest.nanos
 
     /** Where the presented audio is now, in track seconds, extrapolated from the last reading. */
     fun presentedSeconds(nowNanos: Long, playing: Boolean): Double? {
-        val position = positionUs
-        if (position == C.TIME_UNSET) return null
-        val elapsed = if (playing) (nowNanos - positionNanos) / 1e9 else 0.0
-        return position / 1e6 + elapsed
+        val reading = snapshot()
+        if (reading.us == C.TIME_UNSET) return null
+        val elapsed = if (playing) (nowNanos - reading.nanos) / 1e9 else 0.0
+        return reading.us / 1e6 + elapsed
     }
 
     // ---- The incoming side's alignment ------------------------------------------------------
