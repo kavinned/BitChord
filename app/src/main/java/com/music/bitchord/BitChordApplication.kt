@@ -187,10 +187,18 @@ class BitChordApplication : Application(), SingletonImageLoader.Factory, Configu
         // update is what made the whole folder disappear overnight whenever a
         // new build was installed. A build that really does change its keys or
         // its bytes says so through AudioCache's own cache format instead.
+        //
+        // Asked on this thread and carried out on another: clearing walks and
+        // deletes every cached entry one file at a time, which on a full cache
+        // is most of a cold start. Nothing waits for it — one stale cover
+        // outliving an update a little longer is harmless.
         if (AppSettings.consumeVersionUpdate(BuildConfig.VERSION_CODE)) {
-            SingletonImageLoader.get(this).let { loader ->
-                loader.memoryCache?.clear()
-                loader.diskCache?.clear()
+            val app = this
+            CoroutineScope(Dispatchers.IO).launch {
+                SingletonImageLoader.get(app).let { loader ->
+                    loader.memoryCache?.clear()
+                    loader.diskCache?.clear()
+                }
             }
         }
         // Initialize LastFM with saved settings if available
