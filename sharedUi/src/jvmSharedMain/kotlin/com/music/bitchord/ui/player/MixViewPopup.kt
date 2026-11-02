@@ -324,9 +324,16 @@ private fun MixDecks(view: MixTransitionView, progress: State<Float>, live: Bool
             val bottomDeck = size.height - DeckBottomInset.toPx() - deckHeight
             drawDeck(view, outgoing = true, top = topDeck, height = deckHeight, colors = outColors)
             drawDeck(view, outgoing = false, top = bottomDeck, height = deckHeight, colors = inColors)
+        }
+        // The playhead on a layer of its own, so its progress read redraws one
+        // line and not the thousands of bars behind it.
+        Canvas(Modifier.fillMaxSize()) {
             // The playhead, through both decks at once: they are the same moment.
             // Gone once the blend is over rather than parked at its end.
             if (live) {
+                val deckHeight = DeckHeight.toPx()
+                val topDeck = DeckTop.toPx()
+                val bottomDeck = size.height - DeckBottomInset.toPx() - deckHeight
                 val x = size.width * (BoxStart + (BoxEnd - BoxStart) * progress.value.coerceIn(0f, 1f))
                 drawLine(
                     color = Color.White.copy(alpha = 0.9f),
