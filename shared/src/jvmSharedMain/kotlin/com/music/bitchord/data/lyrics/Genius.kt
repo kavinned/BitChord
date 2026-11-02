@@ -53,11 +53,28 @@ object Genius {
      */
     private const val USER_AGENT = "BitChord"
 
+    /**
+     * What the whole chain is allowed to spend, from the first search request to
+     * the last byte of the lyrics page.
+     *
+     * A per-request timeout is not a budget. The client's own `callTimeout` is
+     * eight seconds, and a scrape can issue five search requests before it even
+     * fetches the page, so every request can stay inside its own limit and the
+     * caller still waits forty seconds. This deadline is checked between
+     * attempts (stop trying when it is spent) and is also handed to each request
+     * (a slow call is cut at whatever is left of it), so the chain as a whole
+     * cannot outlive it.
+     */
+    private const val DEADLINE_MS = 12_000L
+
+    /** Ceiling for any one request, whatever is left of the chain's deadline. */
+    private const val CALL_TIMEOUT_MS = 8_000L
+
     private val json by lazy { Json { ignoreUnknownKeys = true; isLenient = true } }
 
     private val httpClient by lazy {
         Http.client.newBuilder()
-            .callTimeout(8, TimeUnit.SECONDS)
+            .callTimeout(CALL_TIMEOUT_MS, TimeUnit.MILLISECONDS)
             .connectTimeout(4, TimeUnit.SECONDS)
             .build()
     }
@@ -69,6 +86,7 @@ object Genius {
     }
 
     private fun scrapeLyrics(title: String, artist: String): List<LyricLine>? {
+        val deadline = System.nanoTime() + DEADLINE_MS * 1_000_000
         val cleanTitle = cleanQuery(title)
         val cleanArtist = cleanQuery(artist)
 
@@ -125,10 +143,14 @@ object Genius {
         val distinctAttempts = searchAttempts.distinctBy { it.query }
 
         val songUrl = distinctAttempts.asSequence()
-            .mapNotNull { attempt -> searchSongUrl(attempt.query, attempt.title, attempt.artist) }
+            .takeWhile { remainingMillis(deadline) > 0 }
+            .mapNotNull { attempt ->
+                searchSongUrl(attempt.query, attempt.title, attempt.artist, deadline)
+            }
             .firstOrNull() ?: return null
 
-        val html = fetchHtml(songUrl)
+        if (remainingMillis(deadline) <= 0) return null
+        val html = fetchHtml(songUrl, remainingMillis(deadline))
         if (html.isNullOrBlank()) return null
 
         val lines = parseHtml(html)
@@ -140,12 +162,18 @@ object Genius {
      * Searches Genius for the track and returns the song's page URL.
      */
     internal fun searchSongUrl(cleanTitle: String, cleanArtist: String): String? {
-        return searchSongUrl("$cleanArtist $cleanTitle".trim(), cleanTitle, cleanArtist)
+        val deadline = System.nanoTime() + DEADLINE_MS * 1_000_000
+        return searchSongUrl("$cleanArtist $cleanTitle".trim(), cleanTitle, cleanArtist, deadline)
     }
 
-    private fun searchSongUrl(query: String, targetTitle: String, targetArtist: String): String? {
+    private fun searchSongUrl(
+        query: String,
+        targetTitle: String,
+        targetArtist: String,
+        deadline: Long,
+    ): String? {
         val url = "https://genius.com/api/search/multi?q=${URLEncoder.encode(query, "UTF-8")}"
-        val responseBody = httpGet(url) ?: return null
+        val responseBody = httpGet(url, remainingMillis(deadline)) ?: return null
 
         return runCatching {
             val root = json.parseToJsonElement(responseBody).jsonObject
@@ -325,19 +353,29 @@ object Genius {
         val artist: String,
     )
 
-    private fun httpGet(url: String): String? = runCatching {
-        val request = Request.Builder()
-            .url(url)
-            .header("User-Agent", USER_AGENT)
-            .header("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,application/json,*/*;q=0.8")
-            .header("Accept-Language", "en-US,en;q=0.9")
-            .build()
-        httpClient.newCall(request).execute().use { response ->
-            if (response.isSuccessful) response.body?.boundedString() else null
-        }
-    }.getOrNull()
+    private fun remainingMillis(deadline: Long): Long =
+        TimeUnit.NANOSECONDS.toMillis(deadline - System.nanoTime())
 
-    private fun fetchHtml(url: String): String? = httpGet(url)
+    private fun httpGet(url: String, budgetMs: Long): String? {
+        // Nothing left to spend: do not open a connection we would have to cut
+        // immediately.
+        if (budgetMs <= 0) return null
+        return runCatching {
+            val request = Request.Builder()
+                .url(url)
+                .header("User-Agent", USER_AGENT)
+                .header("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,application/json,*/*;q=0.8")
+                .header("Accept-Language", "en-US,en;q=0.9")
+                .build()
+            httpClient.newCall(request)
+                .apply { timeout().timeout(minOf(budgetMs, CALL_TIMEOUT_MS), TimeUnit.MILLISECONDS) }
+                .execute().use { response ->
+                    if (response.isSuccessful) response.body?.boundedString() else null
+                }
+        }.getOrNull()
+    }
+
+    private fun fetchHtml(url: String, budgetMs: Long): String? = httpGet(url, budgetMs)
 
     private val TITLE_SEPARATOR by lazy { Regex("""\s*[-–—:]\s*""") }
     private val DECORATIVE_CHARS by lazy { Regex("""[♪♫★☆【】《》「」~_]""") }
