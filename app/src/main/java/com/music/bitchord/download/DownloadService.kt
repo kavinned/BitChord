@@ -162,6 +162,19 @@ class DownloadService : Service() {
         super.onDestroy()
     }
 
+    /**
+     * Android 15 puts a cumulative cap on how long a dataSync service may run.
+     * Reaching it means the process is killed in seconds, so stop the drain
+     * through the same path a cancel takes instead of being killed mid-write.
+     */
+    override fun onTimeout(startId: Int) {
+        shutdown(stopWork = true)
+    }
+
+    override fun onTimeout(startId: Int, fgsType: Int) {
+        shutdown(stopWork = true)
+    }
+
     // ---- Notification -------------------------------------------------------
 
     private fun promote() {
