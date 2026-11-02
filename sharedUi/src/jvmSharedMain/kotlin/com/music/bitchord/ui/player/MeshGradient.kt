@@ -26,6 +26,7 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.graphics.drawscope.translate
 import androidx.compose.ui.graphics.toArgb
 import coil3.compose.LocalPlatformContext
 import com.music.bitchord.ui.components.nextMotionTickDelayMs
@@ -198,6 +199,11 @@ fun MeshGradientBackground(
     // that is the far side of the window and nobody ever saw it, which is how it
     // went unnoticed; in a pane beside a page it was a hand's width of gradient
     // laid over the feed.
+    // One brush per blob, rebuilt only when its colour or the surface size
+    // moves. The drift used to rebuild all four — and their seventeen colour
+    // stops — on every frame the mesh drew, for a shape that was not changing.
+    val brushCache = remember { List(MESH_ANCHORS.size) { BlobBrushCache() } }
+
     Canvas(
         modifier = modifier
             .fillMaxSize()
@@ -222,22 +228,16 @@ fun MeshGradientBackground(
                 y = (anchor.y + 0.16f * sin(drift * MESH_SPEEDS[index] * 0.9f + index * 2.3f)) * size.height,
             )
             val radius = size.maxDimension * 0.62f
-            val blob = blobs[index]
-            drawCircle(
-                // Along smootherstep rather than a straight falloff: a straight one
-                // stops dead at the rim, and that corner showed as a ring where each
-                // blob ended, even through the blur.
-                brush = Brush.radialGradient(
-                    colorStops = Array(FADE_CURVE_STOPS + 1) { i ->
-                        val t = i / FADE_CURVE_STOPS.toFloat()
-                        t to blob.copy(alpha = BLOB_ALPHA * (1f - smootherStep(t)))
-                    },
-                    center = center,
+            // The brush is built at the origin and the blob moved by the draw
+            // transform: a radial gradient bakes its centre, so a cached brush
+            // carrying one would leave every blob where it was first drawn.
+            translate(center.x, center.y) {
+                drawCircle(
+                    brush = brushCache[index].of(blobs[index], radius),
                     radius = radius,
-                ),
-                radius = radius,
-                center = center,
-            )
+                    center = Offset.Zero,
+                )
+            }
         }
 
         // Gentle scrim so white text stays legible over bright art.
@@ -254,6 +254,36 @@ fun MeshGradientBackground(
 
 /** A blob's opacity at its centre. */
 private const val BLOB_ALPHA = 0.85f
+
+/**
+ * A blob's radial brush, kept until its colour or the surface size changes.
+ * Built at the origin so the caller can place it with a draw transform.
+ */
+private class BlobBrushCache {
+    private var color: Color? = null
+    private var radius = 0f
+    private var brush: Brush? = null
+
+    fun of(color: Color, radius: Float): Brush {
+        val cached = brush
+        if (cached != null && color == this.color && radius == this.radius) return cached
+        // Along smootherstep rather than a straight falloff: a straight one
+        // stops dead at the rim, and that corner showed as a ring where each
+        // blob ended, even through the blur.
+        val rebuilt = Brush.radialGradient(
+            colorStops = Array(FADE_CURVE_STOPS + 1) { i ->
+                val t = i / FADE_CURVE_STOPS.toFloat()
+                t to color.copy(alpha = BLOB_ALPHA * (1f - smootherStep(t)))
+            },
+            center = Offset.Zero,
+            radius = radius,
+        )
+        this.color = color
+        this.radius = radius
+        brush = rebuilt
+        return rebuilt
+    }
+}
 
 /** Where the four blobs sit before their own drift, as a share of the surface. */
 private val MESH_ANCHORS = listOf(
