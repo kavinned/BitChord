@@ -203,6 +203,13 @@ internal object BitPerfectOutput {
             directReleasedAtMs = 0L
             return false
         }
+        // MixerTransport is @RequiresApi(34), and this is reachable from
+        // ordinary playback on 26. Below 34 there is no direct handback to
+        // wait for either, so the flag is dropped rather than carried.
+        if (Build.VERSION.SDK_INT < 34) {
+            directReleasedAtMs = 0L
+            return false
+        }
         val usbOutput = context.getSystemService(AudioManager::class.java)
             ?.let(MixerTransport::usbDevice) != null
         if (usbOutput) directReleasedAtMs = 0L
