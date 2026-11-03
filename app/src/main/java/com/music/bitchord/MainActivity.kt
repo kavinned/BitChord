@@ -556,7 +556,7 @@ private fun BitChordApp(
      * stays full-screen behind a mini player rather than losing a lane to a
      * permanent pane.
      */
-    var showNowPlaying by remember { mutableStateOf(false) }
+    var showNowPlaying by rememberSaveable { mutableStateOf(false) }
     // The DAC's own volume while direct USB output owns it; the full player
     // has its own bar for that, so the HUD stays out of its way.
     androidx.compose.runtime.SideEffect { VolumeHud.suppressed = showNowPlaying }

@@ -2,7 +2,9 @@ package com.music.bitchord.ui
 
 import android.app.Application
 import androidx.lifecycle.AndroidViewModel
+import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.viewModelScope
+import androidx.compose.runtime.snapshotFlow
 import com.music.bitchord.R
 import com.music.bitchord.auth.AuthStore
 import com.music.bitchord.auth.SignedIn
@@ -118,7 +120,32 @@ import java.util.concurrent.atomic.AtomicLong
 /** What the Search tab searches: YouTube Music, or the Local Music folder on this device. */
 enum class SearchSource { YOUTUBE, LIBRARY, ADDONS }
 
-class MainViewModel(app: Application) : AndroidViewModel(app) {
+class MainViewModel(
+    app: Application,
+    private val savedState: SavedStateHandle,
+) : AndroidViewModel(app) {
+
+    /**
+     * Brings back the release page that was open when Android killed the app.
+     *
+     * Only the page on top: the stack behind it is what back undoes, and the
+     * user was looking at the one in front. Its identity is saved rather than
+     * its contents — a browse id, a title and a cover are small enough for the
+     * saved state, a page of songs is not — so it reopens as a loading page and
+     * fills in the way any page opened from a link does.
+     */
+    private fun restoreOpenPage() {
+        val saved = savedState.get<ArrayList<String>>(KEY_OPEN_PAGE) ?: return
+        if (saved.size < 5) return
+        val type = runCatching { BrowseType.valueOf(saved[4]) }.getOrDefault(BrowseType.OTHER)
+        openDetail(
+            browseId = saved[0],
+            title = saved[1],
+            subtitle = saved[2],
+            thumbnailUrl = saved[3].takeIf { it.isNotEmpty() },
+            type = type,
+        )
+    }
 
     private val authStore = AuthStore(app)
 
@@ -622,6 +649,36 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         popDetail = ::closeDetail,
         clearDetails = ::clearDetail,
     )
+
+    init {
+        // Both stacks are saved as identities, never as contents: the page on
+        // top is a browse id, a title and a cover, and the routes are an enum
+        // and a depth. Android can then kill a backgrounded app without the
+        // user coming back to an empty Home.
+        navigator.restore(savedState.get<ArrayList<String>>(KEY_BACK_STACK).orEmpty())
+        restoreOpenPage()
+        viewModelScope.launch {
+            snapshotFlow { navigator.entries.toList() }.collect {
+                savedState[KEY_BACK_STACK] = ArrayList(navigator.encode())
+            }
+        }
+        viewModelScope.launch {
+            _detailStack.collect { stack ->
+                val top = stack.lastOrNull()
+                if (top == null) {
+                    savedState.remove<ArrayList<String>>(KEY_OPEN_PAGE)
+                } else {
+                    savedState[KEY_OPEN_PAGE] = arrayListOf(
+                        top.browseId,
+                        top.title,
+                        top.subtitle,
+                        top.thumbnailUrl.orEmpty(),
+                        top.type.name,
+                    )
+                }
+            }
+        }
+    }
 
     /** UI-side continuation fetches that can be handed to the playback service. */
     private val fillInJobs = mutableMapOf<String, Job>()
@@ -2589,6 +2646,12 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     companion object {
+        /** The release page that was open at the last save; see [restoreOpenPage]. */
+        private const val KEY_OPEN_PAGE = "open_page"
+
+        /** The routes pushed over the tabs at the last save; see [AppNavigator.encode]. */
+        private const val KEY_BACK_STACK = "back_stack"
+
         /** Today's Top Picks row, kept so the next launch paints it before any request. */
         private const val TOP_PICKS_FILE = "top_picks_v4.json"
 

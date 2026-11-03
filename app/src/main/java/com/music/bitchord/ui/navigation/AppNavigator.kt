@@ -136,6 +136,33 @@ class AppNavigator(
         clearDetails()
     }
 
+    /**
+     * The stack as flat strings — id, route key, detail depth — small enough
+     * for the saved state. The pages themselves are not saved; only which
+     * route was open over how many release pages. Routes that carry a shelf
+     * (the two Show all grids) have no key and are left out.
+     */
+    fun encode(): List<String> = stack.mapNotNull { entry ->
+        entry.route.saveKey()?.let { "${entry.id}|$it|${entry.detailDepth}" }
+    }
+
+    /**
+     * Puts back what [encode] saved, for a process Android killed underneath
+     * the app. Unknown routes and unreadable entries are skipped rather than
+     * dropped whole, so one renamed route cannot lose the rest.
+     */
+    fun restore(encoded: List<String>) {
+        if (stack.isNotEmpty()) return
+        encoded.forEach { entry ->
+            val parts = entry.split('|')
+            if (parts.size != 3) return@forEach
+            val route = routeOf(parts[1]) ?: return@forEach
+            val depth = parts[2].toIntOrNull() ?: return@forEach
+            val id = parts[0].toLongOrNull() ?: nextId++
+            stack += RouteEntry(id, route, depth)
+        }
+    }
+
     /** Clears everything, then opens [routes] from the bare tab. */
     fun reset(vararg routes: AppRoute) {
         clear()
@@ -172,5 +199,59 @@ sealed interface AppDestination {
     /** Keyed by browse id alone, as the page's hoisted list state is. */
     data class Release(val browseId: String) : AppDestination {
         override val key: String get() = browseId
+    }
+}
+
+/**
+ * A route as one saved-state string, or null for the routes that carry a shelf.
+ *
+ * The two Show all grids are built from a shelf the page above already had, and
+ * a shelf is not something to put in saved state: after a process death there is
+ * no page above them to have come from, so they are left out and back goes one
+ * step further.
+ */
+private fun AppRoute.saveKey(): String? = when (this) {
+    AppRoute.Settings -> "Settings"
+    AppRoute.AccountScrobbling -> "AccountScrobbling"
+    AppRoute.Sources -> "Sources"
+    AppRoute.ListenTogether -> "ListenTogether"
+    AppRoute.WearOs -> "WearOs"
+    AppRoute.Equalizer -> "Equalizer"
+    AppRoute.EqualizerPresets -> "EqualizerPresets"
+    AppRoute.Replay -> "Replay"
+    AppRoute.History -> "History"
+    AppRoute.Discord -> "Discord"
+    AppRoute.Spotify -> "Spotify"
+    AppRoute.Downloads -> "Downloads"
+    AppRoute.Moods -> "Moods"
+    is AppRoute.SettingsSection -> "SettingsSection:${category.name}"
+    is AppRoute.SettingsChoice -> "SettingsChoice:${choice.name}"
+    is AppRoute.LibraryShowAll, is AppRoute.ArtistShelf -> null
+}
+
+/** The inverse of [saveKey]. */
+private fun routeOf(key: String): AppRoute? {
+    val (name, argument) = if (':' in key) key.substringBefore(':') to key.substringAfter(':') else key to null
+    return when (name) {
+        "Settings" -> AppRoute.Settings
+        "AccountScrobbling" -> AppRoute.AccountScrobbling
+        "Sources" -> AppRoute.Sources
+        "ListenTogether" -> AppRoute.ListenTogether
+        "WearOs" -> AppRoute.WearOs
+        "Equalizer" -> AppRoute.Equalizer
+        "EqualizerPresets" -> AppRoute.EqualizerPresets
+        "Replay" -> AppRoute.Replay
+        "History" -> AppRoute.History
+        "Discord" -> AppRoute.Discord
+        "Spotify" -> AppRoute.Spotify
+        "Downloads" -> AppRoute.Downloads
+        "Moods" -> AppRoute.Moods
+        "SettingsSection" -> argument
+            ?.let { runCatching { SettingsCategory.valueOf(it) }.getOrNull() }
+            ?.let(AppRoute::SettingsSection)
+        "SettingsChoice" -> argument
+            ?.let { runCatching { SettingsChoiceKind.valueOf(it) }.getOrNull() }
+            ?.let(AppRoute::SettingsChoice)
+        else -> null
     }
 }
