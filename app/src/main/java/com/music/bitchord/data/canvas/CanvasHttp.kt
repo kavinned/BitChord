@@ -53,7 +53,17 @@ internal fun canvasGetWithStatus(url: String, headers: Map<String, String> = emp
 }
 
 /** A canvas lookup is a small metadata document; a few hundred KB is already huge. */
-private const val CANVAS_MAX_BODY_BYTES = 512L * 1024
+/**
+ * How much of a response is kept, for the lookup bodies that are JSON.
+ *
+ * Not the default for everything here: these requests also fetch Apple's web
+ * player page and its script bundle, which are megabytes — 2.5 MB and 3.3 MB
+ * when this was written. A 512 KB cap made [boundedString] return null rather
+ * than a short read, so the page came back empty, no token was ever found and
+ * every Apple-served canvas silently vanished. The Spotify canvaz JSON, which
+ * is what this was meant for, stays under the cap where it is read.
+ */
+private const val CANVAS_MAX_BODY_BYTES = 4L * 1024 * 1024
 
 /** The browser UA these catalog endpoints expect; they 403 an unknown one. */
 internal const val CANVAS_UA =
