@@ -11,6 +11,7 @@ import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
 import androidx.core.app.NotificationCompat
+import androidx.core.app.NotificationManagerCompat
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.DefaultLifecycleObserver
 import androidx.lifecycle.LifecycleOwner
@@ -36,6 +37,10 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import java.util.concurrent.TimeUnit
@@ -83,6 +88,20 @@ object PlaylistSync {
 
     /** One check at a time, however many of the triggers fire together. */
     private val running = Mutex()
+
+    private val _pendingAsks = MutableStateFlow<Map<String, String>>(emptyMap())
+
+    /**
+     * Playlists held back by [ASK_ABOVE] that the notification could not ask
+     * about, as id to title.
+     *
+     * The ask has always been a notification, and a listener who has turned
+     * notifications off never saw it: nothing was recorded, so every later check
+     * posted another invisible one and the playlist stayed stuck. Settings reads
+     * this to offer the approval in the app instead. Held in memory only — a
+     * check that runs without the answer simply records it again.
+     */
+    val pendingAsks: StateFlow<Map<String, String>> = _pendingAsks.asStateFlow()
 
     /**
      * Follows the setting and the Wi-Fi rule its schedule depends on.
@@ -212,11 +231,22 @@ object PlaylistSync {
         val notification = record.id.hashCode()
         if (fresh.isEmpty()) {
             notifications(context)?.cancel(notification)
+            _pendingAsks.update { it - record.id }
             return
         }
-        if (fresh.size > ASK_ABOVE && !approved) {
-            post(context, notification, askNotification(context, notification, record.title, fresh.size))
-            return
+        when (askOutcome(fresh.size, approved, canNotify(context))) {
+            AskOutcome.Fetch -> Unit
+            AskOutcome.Ask -> {
+                post(context, notification, askNotification(context, notification, record.title, fresh.size))
+                _pendingAsks.update { it - record.id }
+                return
+            }
+            AskOutcome.RecordOnly -> {
+                // Nothing can be posted, so the ask waits in Settings instead of
+                // being dropped on the floor.
+                _pendingAsks.update { it + (record.id to record.title) }
+                return
+            }
         }
         // Already on the device for some other reason: joins the playlist
         // without being fetched again.
@@ -242,6 +272,7 @@ object PlaylistSync {
             ),
             order,
         )
+        if (approved) _pendingAsks.update { it - record.id }
         val arrived = missing.count { it.videoId in handled && it.videoId in Downloads.saved.value }
         if (arrived > 0) post(context, notification, doneNotification(context, record.title, arrived))
     }
@@ -346,6 +377,20 @@ object PlaylistSync {
     }
 
     // ---- Notifications ------------------------------------------------------
+
+    /** What a playlist with new tracks needs: fetching, an ask, or a note of the ask. */
+    internal enum class AskOutcome { Fetch, Ask, RecordOnly }
+
+    internal fun askOutcome(freshCount: Int, approved: Boolean, canNotify: Boolean): AskOutcome = when {
+        freshCount <= ASK_ABOVE || approved -> AskOutcome.Fetch
+        canNotify -> AskOutcome.Ask
+        else -> AskOutcome.RecordOnly
+    }
+
+    /** False when notifications are off, including a denied permission on 13+. */
+    private fun canNotify(context: Context): Boolean =
+        runCatching { NotificationManagerCompat.from(context).areNotificationsEnabled() }
+            .getOrDefault(false)
 
     private fun notifications(context: Context): NotificationManager? =
         context.getSystemService(NotificationManager::class.java)
