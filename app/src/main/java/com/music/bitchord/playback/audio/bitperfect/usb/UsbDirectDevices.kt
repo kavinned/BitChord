@@ -40,6 +40,16 @@ internal object UsbDirectDevices {
     private val descriptors = HashMap<Int, ByteArray>()
     private val volumes = HashMap<Int, Double>()
 
+    /**
+     * Guards the three fields above and nothing else.
+     *
+     * It used to be the object's own monitor, held across `openDevice` and the
+     * descriptor read — work that can block for as long as the device takes to
+     * answer, while the main thread's receiver waited on the same lock. USB I/O
+     * now happens outside any monitor and only the cache is contended.
+     */
+    private val cacheLock = Any()
+
     /** A DAC was attached, detached or granted: whatever is playing should decide again. */
     @Volatile var onChanged: (() -> Unit)? = null
 
@@ -52,7 +62,7 @@ internal object UsbDirectDevices {
             val device = intent.getParcelableExtra<UsbDevice>(UsbManager.EXTRA_DEVICE) ?: return
             when (intent.action) {
                 UsbManager.ACTION_USB_DEVICE_DETACHED -> {
-                    synchronized(this@UsbDirectDevices) {
+                    synchronized(cacheLock) {
                         descriptors.remove(device.deviceId)
                         volumes.remove(device.deviceId)
                         if (requested == device.deviceId) requested = null
@@ -62,7 +72,7 @@ internal object UsbDirectDevices {
                 }
                 UsbManager.ACTION_USB_DEVICE_ATTACHED -> onChanged?.invoke()
                 permissionAction -> {
-                    synchronized(this@UsbDirectDevices) { requested = null }
+                    synchronized(cacheLock) { requested = null }
                     val granted = intent.getBooleanExtra(UsbManager.EXTRA_PERMISSION_GRANTED, false)
                     Log.i(TAG, "USB permission for ${device.productName}: $granted")
                     if (granted) onChanged?.invoke()
@@ -101,12 +111,16 @@ internal object UsbDirectDevices {
         }
 
     /** Asks Android for permission to the attached DAC, once per attachment. */
-    @Synchronized
     fun requestPermission(context: Context) {
         val manager = manager(context) ?: return
         val device = audioDevice(manager) ?: return
-        if (manager.hasPermission(device) || requested == device.deviceId) return
-        requested = device.deviceId
+        if (manager.hasPermission(device)) return
+        // Claim the ask under the lock, then make it outside: the platform call
+        // can block, and the receiver on the main thread takes the same lock.
+        synchronized(cacheLock) {
+            if (requested == device.deviceId) return
+            requested = device.deviceId
+        }
         val flags = PendingIntent.FLAG_UPDATE_CURRENT or
             if (Build.VERSION.SDK_INT >= 31) PendingIntent.FLAG_MUTABLE else 0
         val intent = PendingIntent.getBroadcast(
@@ -116,27 +130,30 @@ internal object UsbDirectDevices {
             flags,
         )
         runCatching { manager.requestPermission(device, intent) }
-            .onFailure { requested = null; Log.w(TAG, "USB permission request failed", it) }
+            .onFailure {
+                synchronized(cacheLock) { requested = null }
+                Log.w(TAG, "USB permission request failed", it)
+            }
     }
 
     /** The DAC's descriptors, read once per attachment; null without permission. */
-    @Synchronized
     fun rawDescriptors(manager: UsbManager, device: UsbDevice): ByteArray? {
-        descriptors[device.deviceId]?.let { return it }
+        synchronized(cacheLock) { descriptors[device.deviceId] }?.let { return it }
         if (!manager.hasPermission(device)) return null
+        // Opening and reading happen outside the lock; the cache is only taken
+        // for the final check, so a concurrent reader still lands on one copy.
         val connection = runCatching { manager.openDevice(device) }.getOrNull() ?: return null
-        return try {
-            connection.rawDescriptors?.also { descriptors[device.deviceId] = it }
+        val bytes = try {
+            connection.rawDescriptors
         } finally {
             connection.close()
-        }
+        } ?: return null
+        return synchronized(cacheLock) { descriptors.getOrPut(device.deviceId) { bytes } }
     }
 
-    @Synchronized
-    fun rememberedVolume(deviceId: Int): Double? = volumes[deviceId]
+    fun rememberedVolume(deviceId: Int): Double? = synchronized(cacheLock) { volumes[deviceId] }
 
-    @Synchronized
     fun rememberVolume(deviceId: Int, db: Double) {
-        volumes[deviceId] = db
+        synchronized(cacheLock) { volumes[deviceId] = db }
     }
 }
