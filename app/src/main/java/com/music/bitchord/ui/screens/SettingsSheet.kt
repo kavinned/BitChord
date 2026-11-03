@@ -131,6 +131,7 @@ import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.viewinterop.AndroidView
 import com.music.bitchord.AppIcon
+import com.music.bitchord.download.PlaylistSync
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.LinkAnnotation
 import androidx.compose.ui.text.SpanStyle
@@ -644,6 +645,21 @@ fun SettingsScreen(
                     onCheckedChange = AppSettings::setSyncDownloadedPlaylists,
                     subtitle = stringResource(R.string.sync_downloaded_playlists_subtitle),
                 )
+            }
+            // The ask is a notification, and with notifications off it was never
+            // seen — the playlist just stayed short of its new songs. Shown here
+            // so the answer is reachable without them.
+            val pendingAsks by PlaylistSync.pendingAsks.collectAsStateWithLifecycle()
+            val pendingAsk = pendingAsks.values.firstOrNull()
+            if (syncDownloadedPlaylists && pendingAsk != null) {
+                row(pendingAsk, "approve", "notifications", "off") {
+                    SettingsRow(
+                        icon = SfIcons.Download,
+                        title = pendingAsk,
+                        subtitle = stringResource(R.string.playlist_sync_ask_text),
+                        onClick = { PlaylistSync.checkNow(context, approved = true) },
+                    )
+                }
             }
         }
 

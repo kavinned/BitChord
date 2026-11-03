@@ -120,7 +120,7 @@ internal class DacFormatConverter(
         /** Input frames either side of an output frame. A lower output rate needs a proportionally longer filter. */
         private val halfTaps = ceil(ZERO_CROSSINGS * maxOf(1.0, downFactor.toDouble() / upFactor)).toInt()
         private val taps = halfTaps * 2
-        private val table = buildTable()
+        private val table = tableFor(inputRate, outputRate, upFactor, downFactor, halfTaps, taps)
 
         /** Interleaved input; the frames from [start] are the ones the next output reads. */
         private val history = DoubleArray(taps * 2 * channels)
@@ -190,8 +190,85 @@ internal class DacFormatConverter(
             filled -= start
             start = 0
         }
+    }
 
-        private fun buildTable(): DoubleArray {
+    companion object {
+        private const val ZERO_CROSSINGS = 64
+
+        /** Puts the filter's transition band just under the lower Nyquist. */
+        private const val CUTOFF = 0.96
+
+        /** About 100 dB of stopband. */
+        private const val KAISER_BETA = 10.06
+
+        /** -1 dB: a loud master peaks above full scale between its samples, and a filter reveals those peaks. */
+        private const val HEADROOM = 0.891
+
+        private const val MAX_FILTER_PHASES = 4096
+
+        /**
+         * The most taps worth building before anything has asked for them.
+         *
+         * Above this the table waits until a track needs it: warming a megabyte
+         * for a rate the DAC may never see costs more than one build at a track
+         * boundary, which is where an un-warmed pair is built anyway.
+         */
+        private const val MAX_WARMED_TABLE = 65_536
+
+        /** One table per rate pair for the process, however many tracks ask for it. */
+        private val tables = HashMap<Long, DoubleArray>()
+
+        private val warmExecutor = java.util.concurrent.Executors.newSingleThreadExecutor { runnable ->
+            Thread(runnable, "sinc-table-warm").apply { isDaemon = true }
+        }
+
+        /** Whether the ratio is simple enough to tabulate; 44.1 to 48 kHz needs 160 phases. */
+        fun canResample(inputRate: Int, outputRate: Int): Boolean =
+            inputRate > 0 && outputRate > 0 && outputRate / gcd(inputRate, outputRate) <= MAX_FILTER_PHASES
+
+        /**
+         * Builds the tables [inputRate] is likely to need, off the playback thread.
+         *
+         * The audio thread builds one inline when a pair is not here, which is
+         * how this has always behaved — this only means the common pairs are
+         * already built by the time a track needs them. An oscillator at 384 kHz
+         * is a 1.3 MB table and a hundred thousand Bessel evaluations; that is
+         * not work to do between two buffers.
+         */
+        fun warmTables(inputRate: Int, outputRates: Iterable<Int>) {
+            if (inputRate <= 0) return
+            val rates = outputRates.filter {
+                it != inputRate && canResample(inputRate, it) && tableEntries(inputRate, it) <= MAX_WARMED_TABLE
+            }
+            if (rates.isEmpty()) return
+            warmExecutor.execute {
+                rates.forEach { outputRate ->
+                    runCatching { Resampler(inputRate, outputRate, 1) }
+                }
+            }
+        }
+
+        private fun tableEntries(inputRate: Int, outputRate: Int): Int {
+            val divisor = gcd(inputRate, outputRate)
+            val up = outputRate / divisor
+            val down = inputRate / divisor
+            val halfTaps = ceil(ZERO_CROSSINGS * maxOf(1.0, down.toDouble() / up)).toInt()
+            return up * halfTaps * 2
+        }
+
+        private fun rateKey(inputRate: Int, outputRate: Int): Long =
+            (inputRate.toLong() shl 32) or (outputRate.toLong() and 0xffffffffL)
+
+        private fun tableFor(inputRate: Int, outputRate: Int, upFactor: Int, downFactor: Int, halfTaps: Int, taps: Int): DoubleArray {
+            val key = rateKey(inputRate, outputRate)
+            synchronized(tables) { tables[key] }?.let { return it }
+            val built = buildTable(upFactor, downFactor, halfTaps, taps)
+            // ponytail: bounded by MAX_FILTER_PHASES per pair and by the rate
+            // pairs a session actually uses; a precomputed asset if that ever grows.
+            synchronized(tables) { return tables.getOrPut(key) { built } }
+        }
+
+        private fun buildTable(upFactor: Int, downFactor: Int, halfTaps: Int, taps: Int): DoubleArray {
             val result = DoubleArray(upFactor * taps)
             // In cycles per input sample, below whichever Nyquist is lower.
             val cutoff = 0.5 * CUTOFF * min(1.0, upFactor.toDouble() / downFactor)
@@ -226,25 +303,6 @@ internal class DacFormatConverter(
             }
             return sum
         }
-    }
-
-    companion object {
-        private const val ZERO_CROSSINGS = 64
-
-        /** Puts the filter's transition band just under the lower Nyquist. */
-        private const val CUTOFF = 0.96
-
-        /** About 100 dB of stopband. */
-        private const val KAISER_BETA = 10.06
-
-        /** -1 dB: a loud master peaks above full scale between its samples, and a filter reveals those peaks. */
-        private const val HEADROOM = 0.891
-
-        private const val MAX_FILTER_PHASES = 4096
-
-        /** Whether the ratio is simple enough to tabulate; 44.1 to 48 kHz needs 160 phases. */
-        fun canResample(inputRate: Int, outputRate: Int): Boolean =
-            inputRate > 0 && outputRate > 0 && outputRate / gcd(inputRate, outputRate) <= MAX_FILTER_PHASES
 
         private tailrec fun gcd(a: Int, b: Int): Int = if (b == 0) a else gcd(b, a % b)
     }

@@ -90,8 +90,12 @@ android {
         abi {
             isEnable = true
             reset()
-            include("armeabi-v7a", "arm64-v8a", "x86_64")
-            isUniversalApk = true
+            // -PbitchordAbi=arm64-v8a builds only what the attached phone can
+            // install. Off, every split plus the universal APK is built, which
+            // is what a release needs.
+            val onlyAbi = project.findProperty("bitchordAbi") as String?
+            if (onlyAbi != null) include(onlyAbi) else include("armeabi-v7a", "arm64-v8a", "x86_64")
+            isUniversalApk = onlyAbi == null
         }
     }
 

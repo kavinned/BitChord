@@ -197,4 +197,37 @@ class PlaylistSyncTest {
         val saved = mapOf("video" to "file:x", "track" to "file:x", "a" to "file:a")
         assertEquals(listOf("a"), Downloads.tracksOnlyIn("one", collections, saved))
     }
+
+    @Test
+    fun `a small batch is fetched without asking`() {
+        assertEquals(
+            PlaylistSync.AskOutcome.Fetch,
+            PlaylistSync.askOutcome(PlaylistSync.ASK_ABOVE, approved = false, canNotify = true),
+        )
+    }
+
+    @Test
+    fun `a large batch asks through notifications when they can be posted`() {
+        assertEquals(
+            PlaylistSync.AskOutcome.Ask,
+            PlaylistSync.askOutcome(PlaylistSync.ASK_ABOVE + 1, approved = false, canNotify = true),
+        )
+    }
+
+    @Test
+    fun `a large batch with notifications off is recorded, not dropped`() {
+        // The ask used to be posted and lost, leaving the playlist stuck forever.
+        assertEquals(
+            PlaylistSync.AskOutcome.RecordOnly,
+            PlaylistSync.askOutcome(PlaylistSync.ASK_ABOVE + 1, approved = false, canNotify = false),
+        )
+    }
+
+    @Test
+    fun `an approved batch is fetched however large`() {
+        assertEquals(
+            PlaylistSync.AskOutcome.Fetch,
+            PlaylistSync.askOutcome(PlaylistSync.ASK_ABOVE * 100, approved = true, canNotify = false),
+        )
+    }
 }

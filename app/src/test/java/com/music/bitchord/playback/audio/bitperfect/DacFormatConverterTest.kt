@@ -260,4 +260,25 @@ class DacFormatConverterTest {
         val formats = UsbDescriptors.dacFormats(UsbDescriptors.Device(alternates = listOf(alternate)), 96_000, 2, 24, convert = false)
         assertEquals(listOf(96_000), formats.map { it.second.sampleRate })
     }
+
+    @Test
+    fun aTableSharedBetweenConvertersStillConvertsTheNextTrackTheSame() {
+        // The filter table is built once per rate pair for the process now, so a
+        // second converter reads the first one's table. Anything that consumed or
+        // normalised that table in place would make this second pass disagree.
+        val input = sine(1000.0, 44_100, 0.5)
+        val first = convert(input.duplicate(), 44_100, 48_000)
+        val second = convert(input.duplicate(), 44_100, 48_000)
+        assertEquals(first.size, second.size)
+        first.forEachIndexed { i, sample -> assertEquals("frame $i", sample, second[i], 0.0) }
+    }
+
+    @Test
+    fun theWidestRatioTheFilterAllowsStillConvertsAfterAWarm() {
+        // 384 kHz into 44.1 kHz is the expensive pair: warming it is capped by
+        // MAX_WARMED_TABLE, so this goes down the same inline path a track takes.
+        DacFormatConverter.warmTables(384_000, BitPerfectPcm.STANDARD_RATES)
+        val out = convert(sine(1000.0, 384_000, 0.5), 384_000, 44_100).middle()
+        assertEquals(0.5 * 0.891, levelAt(out, 1000.0, 44_100), 0.002)
+    }
 }
