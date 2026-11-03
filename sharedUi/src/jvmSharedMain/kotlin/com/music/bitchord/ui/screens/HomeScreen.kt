@@ -7,6 +7,8 @@ import com.music.bitchord.sharedui.resources.*
 import org.jetbrains.compose.resources.painterResource
 import org.jetbrains.compose.resources.DrawableResource
 import androidx.compose.foundation.Image
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
 import org.jetbrains.compose.resources.stringResource
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.foundation.ExperimentalFoundationApi
@@ -44,8 +46,11 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -53,6 +58,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -92,9 +98,18 @@ import com.music.bitchord.ui.components.thumbnailBorder
 import com.music.bitchord.ui.components.trackColumnWidth
 import com.music.bitchord.ui.player.MeshGradientBackground
 import com.music.bitchord.ui.player.MeshPalette
+import kotlinx.coroutines.delay
 
 /** How far the Listen now heading and feed sit above the shared top inset. */
 private val HOME_TITLE_LIFT = 28.dp
+
+/**
+ * How long Home keeps moving after the last touch before it goes still.
+ *
+ * Long enough not to blink out while someone reads a shelf, short enough that
+ * a page left open on a desk stops costing a core quickly.
+ */
+private const val HOME_IDLE_MILLIS = 5_000L
 
 private const val RECENTS_TITLE = "Recents"
 private const val RECENT_TRACKS_PER_COLUMN = 4
@@ -168,8 +183,24 @@ fun HomeScreen(
 ) {
     // Top Picks' pictures and motion wait for the feed — see LocalArtworkImages.
     val feedReady = state !is UiState.Loading
+    // Home goes quiet when nobody has touched it for a while. This is the same
+    // stop "reduce animation" performs — the mesh holds, the palettes stop
+    // stepping, both loops return — triggered by idleness instead of a setting,
+    // because a page that redraws every vsync for motion nobody is looking at
+    // costs the phone a whole core. A touch or a scroll starts it again.
+    var idle by remember { mutableStateOf(false) }
+    var touches by remember { mutableIntStateOf(0) }
+    LaunchedEffect(touches, listState.isScrollInProgress) {
+        if (listState.isScrollInProgress) {
+            idle = false
+            return@LaunchedEffect
+        }
+        idle = false
+        delay(HOME_IDLE_MILLIS)
+        idle = true
+    }
     CompositionLocalProvider(
-        LocalArtworkMotion provides (artworkMotion && feedReady),
+        LocalArtworkMotion provides (artworkMotion && feedReady && !idle),
         LocalArtworkImages provides feedReady,
     ) {
     // The loops also hold still while the feed is being scrolled — see
@@ -180,7 +211,15 @@ fun HomeScreen(
         refreshing = refreshing,
         onRefresh = onRefresh,
         state = pullState,
-        modifier = modifier,
+        modifier = modifier
+            // A touch counts even when it does not scroll — a card tap, a long
+            // press. Once per gesture rather than once per move.
+            .pointerInput(Unit) {
+                awaitEachGesture {
+                    awaitFirstDown(requireUnconsumed = false)
+                    touches++
+                }
+            },
     ) {
         LazyColumn(
             state = listState,
@@ -1025,7 +1064,6 @@ private fun ServiceCard(colors: List<Color>, trackKey: String, icon: ImageVector
         MeshGradientBackground(
             palette = palette,
             trackKey = trackKey,
-            continuous = true,
             blurRadius = 24.dp,
         )
         Icon(
@@ -1067,7 +1105,6 @@ internal fun ShelfCard(
                     MeshGradientBackground(
                         palette = palette,
                         trackKey = "local:downloads",
-                        continuous = true,
                         blurRadius = 24.dp,
                     )
                     Icon(
