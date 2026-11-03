@@ -9,6 +9,7 @@ import com.music.bitchord.data.YtMusicRepository
 import com.music.bitchord.data.model.SearchFilter
 import com.music.bitchord.data.model.SearchResult
 import com.music.bitchord.data.settings.AppSettings
+import com.music.bitchord.data.trimToLimit
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -214,7 +215,7 @@ object ArtistFacts {
             ?.firstOrNull()
             ?.item
         val entry = known[key(name)] ?: StoredArtist(key = key(name))
-        known[key(name)] = entry.copy(
+        remember(name, entry.copy(
             // Only when the hit is actually this artist. A search for a name
             // nobody has heard of still returns *something*, and filing a
             // stranger's photograph under someone else's name is worse than
@@ -224,7 +225,7 @@ object ArtistFacts {
             browseId = hit?.browseId?.takeIf { hit.title.equals(name, ignoreCase = true) }
                 ?: entry.browseId,
             cardAt = System.currentTimeMillis(),
-        )
+        ))
         dirty = true
     }
 
@@ -252,8 +253,21 @@ object ArtistFacts {
             .toList()
 
         val entry = known[key(name)] ?: StoredArtist(key = key(name))
-        known[key(name)] = entry.copy(genres = genres, genresAt = System.currentTimeMillis())
+        remember(name, entry.copy(genres = genres, genresAt = System.currentTimeMillis()))
         dirty = true
+    }
+
+    /**
+     * Files [entry] under [name], capped at [MAX_ARTISTS].
+     *
+     * The file was already trimmed to that size when it was written, but
+     * in-memory growth was left uncapped, so a long session could hold more
+     * artists than the file ever would. A dropped artist is looked up again
+     * the next time their name is played.
+     */
+    private fun remember(name: String, entry: StoredArtist) {
+        known[key(name)] = entry
+        known.trimToLimit(MAX_ARTISTS)
     }
 
     /**
@@ -285,6 +299,7 @@ object ArtistFacts {
             json.decodeFromString(Stored.serializer(), file.readText())
         }.onSuccess { stored ->
             stored.artists.forEach { known[it.key] = it }
+            known.trimToLimit(MAX_ARTISTS)
         }.onFailure {
             Log.w(TAG, "Discarding unreadable artist cache", it)
             file.delete()

@@ -56,10 +56,11 @@ object MusicLink {
     /**
      * Marks an intent as already read.
      *
-     * MainActivity is `singleTask` and declares no `configChanges`, so a theme
-     * or font-size change destroys and recreates it — with `getIntent()` still
-     * returning the link that launched it. Without this, rotating the phone an
-     * hour later would replay the shared song over whatever is playing.
+     * MainActivity is `singleTask` and handles only the size and keyboard
+     * configurations in place, so a day/night, locale, font-scale or density
+     * change still destroys and recreates it — with `getIntent()` returning the
+     * link that launched it. Without this, changing the theme an hour later
+     * would replay the shared song over whatever is playing.
      */
     private const val EXTRA_CONSUMED = "bitchord.linkConsumed"
 

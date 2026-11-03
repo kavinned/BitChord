@@ -63,7 +63,7 @@ class PlaylistSyncTest {
     }
 
     @Test
-    fun `a feed that loops back on itself ends instead of running forever`() = runTest {
+    fun `a feed that loops back on itself stops and says it did not finish`() = runTest {
         var requests = 0
         val listing = PlaylistSync.readWholePlaylist(
             first = { page("a", next = "t") },
@@ -72,9 +72,63 @@ class PlaylistSyncTest {
                 page("a", next = "t")
             },
         )
+        // One request: the second page added nothing and handed back the token
+        // that had just been followed, which is a loop rather than an end.
         assertEquals(1, requests)
         assertEquals(listOf("a"), ids(listing.songs))
+        assertFalse(listing.complete)
+    }
+
+    @Test
+    fun `a duplicate page is followed to the tracks behind it`() = runTest {
+        // YouTube can repeat a page with a fresh token still attached. The tail
+        // behind it is real, so the walk follows rather than trusting the repeat
+        // as the end of the playlist — which would hide it on every later check too.
+        val pages = mapOf(
+            "t2" to page("a", next = "t3"),
+            "t3" to page("a", "c"),
+        )
+        val listing = PlaylistSync.readWholePlaylist(
+            first = { page("a", next = "t2") },
+            more = { pages.getValue(it) },
+        )
+        assertEquals(listOf("a", "c"), ids(listing.songs))
         assertTrue(listing.complete)
+    }
+
+    @Test
+    fun `a run of pages that add nothing ends the walk as incomplete`() = runTest {
+        // A feed that keeps handing out fresh tokens while repeating itself would
+        // otherwise be walked for as long as the app is open.
+        var requests = 0
+        val listing = PlaylistSync.readWholePlaylist(
+            first = { page("a", next = "t0") },
+            more = {
+                requests++
+                page("a", next = "t$requests")
+            },
+        )
+        assertEquals(2, requests)
+        assertEquals(listOf("a"), ids(listing.songs))
+        assertFalse(listing.complete)
+    }
+
+    @Test
+    fun `a check that read every playlist is not due again for six hours`() {
+        val now = 1_000_000_000L
+        assertEquals(now, PlaylistSync.lastCheckStamp(whole = true, now = now))
+    }
+
+    @Test
+    fun `a check that could not read everything comes due in five minutes`() {
+        // One playlist deleted or made private online must not turn every
+        // foreground into a full re-read of every downloaded playlist.
+        val now = 1_000_000_000L
+        val sixHours = 6L * 60 * 60 * 1000
+        val fiveMinutes = 5L * 60 * 1000
+        val stamp = PlaylistSync.lastCheckStamp(whole = false, now = now)
+        assertTrue("a partial check is not due yet", now - stamp < sixHours)
+        assertTrue("a partial check is due within five minutes", now + fiveMinutes - stamp >= sixHours)
     }
 
     @Test
@@ -104,10 +158,23 @@ class PlaylistSyncTest {
     fun `only a YouTube playlist is checked, under the id YouTube answers to`() {
         assertEquals("VLPL1", PlaylistSync.syncableBrowseId(record("VLPL1")))
         assertEquals("VLPL1", PlaylistSync.syncableBrowseId(record("PL1")))
+        assertEquals("VLOLAK5UY1", PlaylistSync.syncableBrowseId(record("OLAK5UY1")))
         assertNull(PlaylistSync.syncableBrowseId(record("MPREb_1", playlist = false)))
         assertNull(PlaylistSync.syncableBrowseId(record("VLOLAK1", playlist = false)))
         assertNull(PlaylistSync.syncableBrowseId(record("local:playlist:sp_local_1")))
         assertNull(PlaylistSync.syncableBrowseId(record("spotify:playlist:1")))
+    }
+
+    @Test
+    fun `a generated page is never checked, so its record cannot grow forever`() {
+        // Mixes, the liked page and uploads are rebuilt by YouTube as you listen:
+        // every check would find a fresh tail and download it again.
+        assertNull(PlaylistSync.syncableBrowseId(record("RDEM1")))
+        assertNull(PlaylistSync.syncableBrowseId(record("RDCLAK1")))
+        assertNull(PlaylistSync.syncableBrowseId(record("VLLM1")))
+        assertNull(PlaylistSync.syncableBrowseId(record("LMsong1")))
+        assertNull(PlaylistSync.syncableBrowseId(record("LLchannel1")))
+        assertNull(PlaylistSync.syncableBrowseId(record("UUupload1")))
     }
 
     @Test

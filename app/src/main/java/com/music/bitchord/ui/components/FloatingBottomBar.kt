@@ -228,17 +228,6 @@ fun FloatingBottomBar(
         label = "pillOffset",
     )
 
-    // How much of a tab's stride is still ahead of the indicator: 0 at rest,
-    // toward 1 in the middle of a move or under a drag that has run away from
-    // it. The stretch below is a function of this and nothing else, which is
-    // what keeps it honest — the shape can only be deformed while it is
-    // actually behind where it is going.
-    val lag = if (tabStepPx > 0f) {
-        (abs(pillTargetPx - animatedPillOffset) / tabStepPx).coerceIn(0f, 1f)
-    } else {
-        0f
-    }
-
     var lastHapticTab by remember { mutableIntStateOf(selectedIndex) }
 
     LaunchedEffect(selectedIndex) {
@@ -275,6 +264,16 @@ fun FloatingBottomBar(
                     .height(with(density) { rowSize.height.toDp() })
                     .graphicsLayer {
                         translationX = animatedPillOffset
+                        // How much of a tab's stride is still ahead of the
+                        // indicator: 0 at rest, toward 1 in the middle of a
+                        // move or under a drag that has run away from it.
+                        // Read here, in the draw phase, so the slide itself
+                        // does not recompose the bar on every frame.
+                        val lag = if (tabStepPx > 0f) {
+                            (abs(pillTargetPx - animatedPillOffset) / tabStepPx).coerceIn(0f, 1f)
+                        } else {
+                            0f
+                        }
                         // Around its own centre, so the indicator draws out
                         // both ways rather than growing a tail off one edge —
                         // a leading edge that ran ahead of the glyph it is

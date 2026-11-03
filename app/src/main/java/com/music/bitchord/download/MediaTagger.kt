@@ -13,6 +13,8 @@ import kotlinx.coroutines.sync.withLock
 import java.io.ByteArrayOutputStream
 import java.io.File
 import java.io.InputStream
+import java.nio.file.Files
+import java.nio.file.StandardCopyOption
 import java.security.MessageDigest
 import kotlin.math.max
 
@@ -22,13 +24,15 @@ import kotlin.math.max
  * player rather than only inside this app, where the filename is otherwise
  * the only thing carrying that.
  *
- * Best-effort throughout, deliberately: the cover fetch is a network call
- * that can fail for reasons that have nothing to do with the download that
- * already succeeded, and [Mp4Tagger], [WebmTagger] and [FlacTagger] all fall
- * back to returning their input unchanged on anything they don't recognise.
- * Every step here is caught rather than left to propagate, because a download
- * this runs after has already landed — a tagging failure should cost the tags,
- * not the file.
+ * Best-effort on the metadata: the cover fetch is a network call that can fail
+ * for reasons that have nothing to do with the download that already succeeded,
+ * and [Mp4Tagger], [WebmTagger] and [FlacTagger] all fall back to returning
+ * their input unchanged on anything they don't recognise. Building the tags is
+ * caught rather than left to propagate, because a download this runs after has
+ * already landed — a tagging failure should cost the tags, not the file.
+ *
+ * Writing them is the exception: it replaces the file itself, so a failure to
+ * write is thrown and the download is aborted rather than committed truncated.
  *
  * The lyrics are the one thing not fetched here. They come in as text from
  * [LyricsTag], started by [Downloads] early enough to overlap the transfer,
@@ -325,7 +329,15 @@ object MediaTagger {
             wordLyrics = wordLyrics,
         ) ?: return wholeFile
 
-        val temp = File(context.cacheDir, "tagging-${track.videoId.hashCode()}-${System.nanoTime()}.flac")
+        // Beside the target when it is a file, so [replaceWith]'s rename stays
+        // within one filesystem instead of falling back to rewriting the
+        // finished file in place.
+        val target = uri.path?.takeIf { uri.scheme == "file" }?.let { File(it) }
+        val temp = if (target != null) {
+            File(target.parentFile, ".${target.name}.${System.nanoTime()}.tmp")
+        } else {
+            File(context.cacheDir, "tagging-${track.videoId.hashCode()}-${System.nanoTime()}.flac")
+        }
         return runCatching {
             temp.outputStream().buffered().use { sink ->
                 sink.write(rewrite.metadata)
@@ -346,8 +358,8 @@ object MediaTagger {
     private fun replaceWith(context: Context, uri: Uri, temp: File) {
         if (uri.scheme == "file") {
             val target = File(requireNotNull(uri.path))
-            // Both live under the app's own data directory, so this is a rename
-            // within one filesystem and the file is never half-replaced.
+            // [tagFlacStreaming] keeps its temp beside the target, so this is a
+            // rename within one filesystem and the file is never half-replaced.
             if (temp.renameTo(target)) return
         }
         temp.inputStream().use { source ->
@@ -444,13 +456,44 @@ object MediaTagger {
         }
     }.onFailure { Log.w(TAG, "could not read $uri for tagging: ${it.message}") }.getOrNull()
 
+    /**
+     * Replace the bytes at [uri] with [bytes].
+     *
+     * Not an in-place write: this file is the download, and the store commits
+     * whatever is there when this returns. A write that died halfway through
+     * used to be swallowed here and the truncated track was committed as a good
+     * download. Instead the file is written beside itself and moved over in one
+     * atomic rename — the old bytes stay intact until the new ones are complete
+     * — and a failure is left to propagate so the download aborts. A content
+     * uri has no rename to give it that, so there the exception is the whole
+     * protection: the caller's abort deletes the pending row.
+     */
     private fun writeAll(context: Context, uri: Uri, bytes: ByteArray) {
-        runCatching {
-            if (uri.scheme == "file") {
-                File(requireNotNull(uri.path)).writeBytes(bytes)
-            } else {
-                context.contentResolver.openOutputStream(uri, "wt")?.use { it.write(bytes) }
-            }
-        }.onFailure { Log.w(TAG, "could not write tags to $uri: ${it.message}") }
+        if (uri.scheme == "file") {
+            writeBeside(File(requireNotNull(uri.path)), bytes)
+        } else {
+            context.contentResolver.openOutputStream(uri, "wt")?.use { it.write(bytes) }
+                ?: error("could not open $uri for writing")
+        }
+    }
+
+    /**
+     * Replace [target] with [bytes] through a sibling temp file and one atomic
+     * rename. Throws — leaving [target] as it was — if either step fails.
+     */
+    internal fun writeBeside(target: File, bytes: ByteArray) {
+        // Same directory, so the move is within one filesystem and atomic.
+        val temporary = File(target.parentFile, ".${target.name}.${System.nanoTime()}.tmp")
+        try {
+            temporary.writeBytes(bytes)
+            Files.move(
+                temporary.toPath(),
+                target.toPath(),
+                StandardCopyOption.REPLACE_EXISTING,
+                StandardCopyOption.ATOMIC_MOVE,
+            )
+        } finally {
+            temporary.delete()
+        }
     }
 }

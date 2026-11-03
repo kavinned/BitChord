@@ -140,3 +140,34 @@ object Http {
         .apply { if (USAGE_LOGGING_ENABLED) addNetworkInterceptor(usageInterceptor) }
         .build()
 }
+
+/**
+ * Largest body a single-document lookup — lyrics, canvas, a scraped page — is
+ * allowed to read. Generous for any of them, and small enough that one broken
+ * provider cannot drag the heap into an OutOfMemoryError.
+ */
+const val MAX_LOOKUP_BODY_BYTES = 4L * 1024 * 1024
+
+/**
+ * [ResponseBody.bytes], with a ceiling. Null rather than a truncated body:
+ * half a document is not a smaller answer to the same question.
+ */
+fun ResponseBody.boundedBytes(maxBytes: Long = MAX_LOOKUP_BODY_BYTES): ByteArray? {
+    if (contentLength() > maxBytes) return null
+    val input = byteStream()
+    val out = java.io.ByteArrayOutputStream()
+    val buffer = ByteArray(16 * 1024)
+    var total = 0L
+    while (true) {
+        val read = input.read(buffer)
+        if (read == -1) break
+        total += read
+        if (total > maxBytes) return null
+        out.write(buffer, 0, read)
+    }
+    return out.toByteArray()
+}
+
+/** [ResponseBody.string], with the same ceiling as [boundedBytes]. */
+fun ResponseBody.boundedString(maxBytes: Long = MAX_LOOKUP_BODY_BYTES): String? =
+    boundedBytes(maxBytes)?.toString(Charsets.UTF_8)

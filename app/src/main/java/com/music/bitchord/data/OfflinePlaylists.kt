@@ -59,6 +59,9 @@ object OfflinePlaylists {
     private val lock = Any()
     private val io = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
+    /** Whether the stored list has been published. Guarded by [lock]. */
+    private var loaded = false
+
     /** Set by [init] to the app's own wording for the built-in playlist. */
     private var likedTitle = "Liked songs"
 
@@ -74,12 +77,35 @@ object OfflinePlaylists {
         if (this::prefs.isInitialized) return
         this.likedTitle = likedTitle
         prefs = context.applicationContext.getSharedPreferences(PREF_NAME, Context.MODE_PRIVATE)
-        publish(load())
-        // Everything after what was just read, however soon it comes: a like
-        // made before this collector is up is still the newest state when it is.
-        val loaded = _playlists.value
+        // Parsing every playlist and every liked song is a cold-start cost, and
+        // the built-in Liked list is already the initial value, so a page has
+        // something to draw until this lands. Published under [lock] against
+        // [loaded]: a like that arrives first loads the file itself (see
+        // [mutate]), so this can neither overwrite it nor be written back over
+        // the file by the collector.
         io.launch {
-            playlists.filter { it !== loaded }.conflate().collect { persist(it) }
+            val stored = load()
+            synchronized(lock) {
+                if (!loaded) {
+                    loaded = true
+                    publish(stored)
+                    startPersisting()
+                }
+            }
+        }
+    }
+
+    /**
+     * Writes every change after the one just published.
+     *
+     * Started only once the stored list is in hand, and capturing it as the
+     * value to skip, so the first write is a real change rather than a
+     * re-encode of what was just read. Guarded by [lock] through its callers.
+     */
+    private fun startPersisting() {
+        val initial = _playlists.value
+        io.launch {
+            playlists.filter { it !== initial }.conflate().collect { persist(it) }
         }
     }
 
@@ -169,7 +195,18 @@ object OfflinePlaylists {
     }
 
     private inline fun mutate(change: (List<OfflinePlaylist>) -> List<OfflinePlaylist>) {
-        synchronized(lock) { publish(change(_playlists.value)) }
+        synchronized(lock) {
+            // A change that beats the background parse loads the file first, so
+            // it is applied to what is stored rather than to the placeholder —
+            // and so the first thing ever written back is the file plus this
+            // change, never the placeholder alone.
+            if (!loaded) {
+                loaded = true
+                publish(load())
+                startPersisting()
+            }
+            publish(change(_playlists.value))
+        }
     }
 
     /** Sets the list and the liked set together, Liked pinned first. */
@@ -203,20 +240,34 @@ object OfflinePlaylists {
 
     private fun load(): List<OfflinePlaylist> {
         val raw = prefs.getString(KEY_PLAYLISTS, null) ?: return emptyList()
-        return runCatching {
-            val array = JSONArray(raw)
-            (0 until array.length()).map { i ->
+        return runCatching { parse(raw) }.getOrElse {
+            DebugLog.w("BitChord", "Offline playlists unreadable: ${it.message}")
+            emptyList()
+        }
+    }
+
+    /**
+     * Parsed record by record. One unreadable playlist — a field of the wrong
+     * type, say — used to fail the whole array, and the empty result was then
+     * written back over the stored file on the next edit, taking every playlist
+     * and every like with it.
+     */
+    internal fun parse(raw: String): List<OfflinePlaylist> {
+        val array = JSONArray(raw)
+        return (0 until array.length()).mapNotNull { i ->
+            runCatching {
                 val obj = array.getJSONObject(i)
                 val songs = obj.getJSONArray("songs")
                 OfflinePlaylist(
                     id = obj.getString("id"),
                     title = obj.optString("title"),
-                    songs = (0 until songs.length()).mapNotNull { songFrom(songs.getJSONObject(it)) },
+                    songs = (0 until songs.length()).mapNotNull { s ->
+                        runCatching { songFrom(songs.getJSONObject(s)) }.getOrNull()
+                    },
                 )
-            }
-        }.getOrElse {
-            DebugLog.w("BitChord", "Offline playlists unreadable: ${it.message}")
-            emptyList()
+            }.onFailure {
+                DebugLog.w("BitChord", "Offline playlist $i unreadable: ${it.message}")
+            }.getOrNull()
         }
     }
 
@@ -233,7 +284,7 @@ object OfflinePlaylists {
                         .put("songs", songs),
                 )
             }
-            prefs.edit().putString(KEY_PLAYLISTS, array.toString()).apply()
+            prefs.edit().putString(KEY_PLAYLISTS, array.toString()).commit()
         }.onFailure { DebugLog.w("BitChord", "Offline playlists not saved: ${it.message}") }
     }
 

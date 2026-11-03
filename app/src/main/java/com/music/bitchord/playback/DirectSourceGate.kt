@@ -17,6 +17,7 @@ import kotlinx.coroutines.async
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.withTimeout
 import kotlinx.coroutines.withTimeoutOrNull
 import java.util.concurrent.ConcurrentHashMap
 
@@ -67,11 +68,24 @@ object DirectSourceGate {
      * opens is answered or given up on with ten seconds still to go, which is
      * time for the YouTube fallback to resolve and buffer before the blend.
      *
-     * A limit on the wait, not on the lookup, which runs on until the addon
-     * client answers or gives up: a cold FLAC can take an addon longer than
-     * this to produce.
+     * A limit on the wait, not on the lookup: the lookup itself gets
+     * [LOOKUP_HARD_TIMEOUT_MS] before it is abandoned, which is longer than
+     * this so a cold FLAC can still land for the hand-off to [QualityUpgrade]
+     * even though nobody waited for it here.
      */
     const val LOOKUP_TIMEOUT_MS = 15_000L
+
+    /**
+     * How long a lookup may run at all, whether or not anyone is still waiting
+     * on it.
+     *
+     * Three times [LOOKUP_TIMEOUT_MS], so an addon too slow for the wait can
+     * still answer in time to be handed over through [stillLooking] and
+     * [QualityUpgrade.settledForLess]. Without a bound, one addon that never
+     * answers leaves its coroutine on the IO dispatcher for the life of the
+     * process, long after the track it was for has stopped playing.
+     */
+    private const val LOOKUP_HARD_TIMEOUT_MS = 45_000L
 
     /**
      * Whether Direct Source Stream is on *and* has an addon to stream from.
@@ -149,15 +163,17 @@ object DirectSourceGate {
      * player's own preparation, or left over from an earlier play.
      *
      * Asked every crossfade tick, so the cache is read at most once a
-     * [READY_RECHECK_MS] per track, and a yes is kept: bytes on disk do not
-     * stop being there mid-song.
+     * [READY_RECHECK_MS] per track. A yes expires like a no: the entry can be
+     * evicted, removed from the Cached songs folder, or cleared by the listener
+     * while the marker still asks, and a stale yes is the one answer that
+     * cannot correct itself.
      */
     fun isStreamReady(item: androidx.media3.common.MediaItem): Boolean {
         val uri = item.localConfiguration?.uri ?: return true
         if (uri.scheme != "bitchord") return true
         val now = android.os.SystemClock.elapsedRealtime()
         readyCheck?.let { (id, ready, at) ->
-            if (id == item.mediaId && (ready || now - at < READY_RECHECK_MS)) return ready
+            if (id == item.mediaId && now - at < READY_RECHECK_MS) return ready
         }
         // Or the whole file, for a track shorter than the threshold.
         val ready = AudioCache.cachedPrefixBytes(uri) >= READY_BYTES || AudioCache.isFullyCached(uri)
@@ -196,22 +212,46 @@ object DirectSourceGate {
      * The wait is bounded by [LOOKUP_TIMEOUT_MS] from when the lookup started,
      * however late the caller joined it. Null means no addon had it in time,
      * and the caller falls back to YouTube and says so with [startedOnYouTube].
+     *
+     * A lookup older than the wait is not joined: elapsed already exceeds the
+     * budget, so `withTimeoutOrNull` would return null at once and the track
+     * would be stuck falling back until that deferred finally completed. It is
+     * replaced instead, and the new one gets the whole wait.
      */
     suspend fun lookup(videoId: String, target: TrackMatcher.Target): SourceStream? {
         val fresh = Lookup(
             work = scope.async(TrackLog.about(videoId), start = CoroutineStart.LAZY) {
-                SourceResolver.directStream(target)
+                // A lookup outlives every waiter once it is handed over through
+                // [stillLooking], so the work itself has to be bounded too.
+                withTimeout(LOOKUP_HARD_TIMEOUT_MS) { SourceResolver.directStream(target) }
             },
             startedAtMs = android.os.SystemClock.elapsedRealtime(),
         )
-        val running = lookups.putIfAbsent(videoId, fresh)
-        if (running != null) {
-            fresh.work.cancel()
-        } else {
-            fresh.work.invokeOnCompletion { lookups.remove(videoId, fresh) }
-            fresh.work.start()
+        val existing = lookups.putIfAbsent(videoId, fresh)
+        val lookup = when {
+            existing == null -> {
+                fresh.work.invokeOnCompletion { lookups.remove(videoId, fresh) }
+                fresh.work.start()
+                fresh
+            }
+            android.os.SystemClock.elapsedRealtime() - existing.startedAtMs < LOOKUP_TIMEOUT_MS -> {
+                // Still inside the window: join it, and drop the deferred that
+                // was built only in case there was nothing to join.
+                fresh.work.cancel()
+                existing
+            }
+            else -> {
+                // Past the window, so replace it. The conditional `remove(key,
+                // value)` in the old lookup's completion only evicts the entry
+                // if the map still maps to it — this replace already swapped it
+                // out, so a completed old lookup cannot take the new one's
+                // place away.
+                lookups.replace(videoId, existing, fresh)
+                fresh.work.invokeOnCompletion { lookups.remove(videoId, fresh) }
+                fresh.work.start()
+                fresh
+            }
         }
-        val lookup = running ?: fresh
         val waited = android.os.SystemClock.elapsedRealtime() - lookup.startedAtMs
         return withTimeoutOrNull(LOOKUP_TIMEOUT_MS - waited) { lookup.work.await() }
     }

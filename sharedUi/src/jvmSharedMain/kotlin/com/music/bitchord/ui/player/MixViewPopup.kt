@@ -27,6 +27,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
@@ -59,6 +60,7 @@ import androidx.compose.ui.graphics.drawscope.clipRect
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
@@ -162,6 +164,10 @@ internal fun MixViewPopup(
                         .clickable(
                             indication = null,
                             interactionSource = remember { MutableInteractionSource() },
+                            // The scrim is the only way out of the popup besides
+                            // system Back, so it needs to announce itself.
+                            onClickLabel = stringResource(Res.string.close),
+                            role = Role.Button,
                             onClick = onDismiss,
                         )
                 } else {
@@ -194,12 +200,12 @@ internal fun MixViewPopup(
                                 .background(PopupColor.copy(alpha = 0.94f))
                         },
                     )
-                    // Taps on the card are the card's, not the scrim's.
-                    .clickable(
-                        indication = null,
-                        interactionSource = remember { MutableInteractionSource() },
-                        onClick = {},
-                    )
+                    // Taps on the card are the card's, not the scrim's. Swallowed
+                    // by a pointer handler rather than an empty clickable, which
+                    // merges every child into one semantics node whose action
+                    // does nothing — TalkBack then reads the popup as one dead
+                    // button and the deck headers cannot be reached.
+                    .pointerInput(Unit) { detectTapGestures { } }
                     .padding(vertical = 14.dp),
                 horizontalAlignment = Alignment.CenterHorizontally,
             ) {
@@ -318,9 +324,16 @@ private fun MixDecks(view: MixTransitionView, progress: State<Float>, live: Bool
             val bottomDeck = size.height - DeckBottomInset.toPx() - deckHeight
             drawDeck(view, outgoing = true, top = topDeck, height = deckHeight, colors = outColors)
             drawDeck(view, outgoing = false, top = bottomDeck, height = deckHeight, colors = inColors)
+        }
+        // The playhead on a layer of its own, so its progress read redraws one
+        // line and not the thousands of bars behind it.
+        Canvas(Modifier.fillMaxSize()) {
             // The playhead, through both decks at once: they are the same moment.
             // Gone once the blend is over rather than parked at its end.
             if (live) {
+                val deckHeight = DeckHeight.toPx()
+                val topDeck = DeckTop.toPx()
+                val bottomDeck = size.height - DeckBottomInset.toPx() - deckHeight
                 val x = size.width * (BoxStart + (BoxEnd - BoxStart) * progress.value.coerceIn(0f, 1f))
                 drawLine(
                     color = Color.White.copy(alpha = 0.9f),
@@ -475,7 +488,9 @@ private fun rememberWaveColors(artworkUrl: String?): WaveColors {
     }
     LaunchedEffect(artworkUrl) {
         val url = artworkUrl ?: return@LaunchedEffect
-        if (WaveColorCache[url] != null) return@LaunchedEffect
+        // Filled by the other deck on the same cover after this one remembered
+        // its default: apply it rather than returning on its existence.
+        WaveColorCache[url]?.let { target = it; return@LaunchedEffect }
         val request = ImageRequest.Builder(context)
             .data(url)
             .size(128)

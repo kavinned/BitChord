@@ -32,9 +32,10 @@ object WebDavConfig {
 
     fun isConfigured(url: String): Boolean {
         val normalized = normalizeUrl(url)
-        if (!normalized.startsWith("http://", ignoreCase = true) &&
-            !normalized.startsWith("https://", ignoreCase = true)
-        ) {
+        // Cleartext traffic is off app-wide, so an http:// address can never
+        // connect. Refuse it here rather than store it and fail at the
+        // platform block, which reads as the server being unreachable.
+        if (!normalized.startsWith("https://", ignoreCase = true)) {
             return false
         }
         // "not a url" normalizes to "https://not a url" — only a parseable

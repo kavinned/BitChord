@@ -1,7 +1,7 @@
 package com.music.bitchord.data.canvas
 
 import com.music.bitchord.data.DebugLog as Log
-import com.music.bitchord.data.Http
+import com.music.bitchord.data.boundedBytes
 import com.google.protobuf.CodedInputStream
 import com.google.protobuf.CodedOutputStream
 import kotlinx.serialization.json.Json
@@ -57,10 +57,18 @@ object SpotifyCanvas {
      */
     private const val SPOTIFY_APP_UA = "Spotify/9.0.34.593 iOS/18.4 (iPhone15,3)"
 
+    /**
+     * A canvaz-cache answer is a small protobuf document. The body used to be
+     * read whole and then copied again into a String for the regex fallback,
+     * so one oversized answer cost twice its size in heap.
+     */
+    private const val MAX_CANVAS_RESPONSE_BYTES = 512L * 1024
+
     private val json = Json { ignoreUnknownKeys = true; isLenient = true }
     private val CANVAS_URL_REGEX = Regex("""https://[^"'\s\x00-\x1F]+\.cnvs\.mp4""")
 
-    private data class TrackHit(val uri: String, val title: String, val artist: String, val album: String?)
+    /** Null [title]/[artist]/[album] means the response could not prove them; see [searchViaPathfinder]. */
+    private data class TrackHit(val uri: String, val title: String?, val artist: String?, val album: String?)
 
     suspend fun search(title: String, artist: String, album: String?): CanvasArtwork? {
         val token = SpotifyToken.accessToken()
@@ -85,10 +93,10 @@ object SpotifyCanvas {
 
         val canvasUrl = fetchCanvasUrl(hit.uri, token)
         if (canvasUrl == null) {
-            Log.d(TAG, "no canvas for '$title' by '$artist' (matched '${hit.title}', no clip)")
+            Log.d(TAG, "no canvas for '$title' by '$artist' (matched '${hit.title ?: title}', no clip)")
             return null
         }
-        Log.d(TAG, "canvas for '${hit.title}' by '${hit.artist}'")
+        Log.d(TAG, "canvas for '${hit.title ?: title}' by '${hit.artist ?: artist}'")
         return CanvasArtwork(
             url = canvasUrl,
             title = hit.title,
@@ -106,6 +114,11 @@ object SpotifyCanvas {
      * relevance ranking on a "title artist album" query is trusted instead,
      * the same way [firstTrackUri] trusts an album's own track listing rather
      * than re-checking it.
+     *
+     * The metadata fields are null for that reason, not the ones asked for —
+     * returning those made [CanvasArtwork.matches] compare the question with
+     * itself and pass every time. Null is how this source says the check was
+     * deliberately skipped rather than satisfied.
      */
     private fun searchViaPathfinder(title: String, artist: String, album: String?, token: String): TrackHit? {
         val clientToken = SpotifyToken.clientToken()
@@ -166,7 +179,7 @@ object SpotifyCanvas {
             Log.w(TAG, "pathfinder hit had neither uri nor id")
             return null
         }
-        return TrackHit(uri, title, artist, album)
+        return TrackHit(uri, title = null, artist = null, album = null)
     }
 
     private fun searchViaRest(title: String, artist: String, album: String?, token: String): TrackHit? {
@@ -325,7 +338,7 @@ object SpotifyCanvas {
             .header("Accept-Language", "en")
             .build()
         val (code, body) = runCatching {
-            Http.client.newCall(request).execute().use { response ->
+            canvasClient.newCall(request).execute().use { response ->
                 response.code to if (response.isSuccessful) response.body?.string() else null
             }
         }.getOrElse { return SpotifyCanvasQuery.Answer.Failed("request threw: ${it.message}") }
@@ -356,11 +369,11 @@ object SpotifyCanvas {
             .build()
 
         val bytes = runCatching {
-            Http.client.newCall(request).execute().use { response ->
+            canvasClient.newCall(request).execute().use { response ->
                 if (!response.isSuccessful) {
                     Log.w(TAG, "canvaz-cache http ${response.code} for $trackUri")
                 }
-                if (response.isSuccessful) response.body?.bytes() else null
+                if (response.isSuccessful) response.body?.boundedBytes(MAX_CANVAS_RESPONSE_BYTES) else null
             }
         }.onFailure { Log.w(TAG, "canvaz-cache request threw: ${it.message}") }.getOrNull() ?: return null
 

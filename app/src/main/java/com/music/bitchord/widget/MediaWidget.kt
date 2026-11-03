@@ -71,7 +71,14 @@ abstract class MediaWidget : AppWidgetProvider() {
     }
 
     override fun onDisabled(context: Context) {
-        MediaWidgetArt.clear()
+        // The artwork cache is process-wide: the other big provider and the
+        // pill draw through it too. Drop it only when neither has an instance
+        // left. This provider's own ids are skipped, because they are already
+        // being withdrawn while this runs.
+        val others = PROVIDERS.map { it.first } + MediaWidgetPill::class.java
+        if (!hasInstances(context, others.filter { it != this::class.java })) {
+            MediaWidgetArt.clear()
+        }
         lastArt.clear()
     }
 
@@ -370,6 +377,10 @@ abstract class MediaWidget : AppWidgetProvider() {
             fallbackWidthDp: Int,
         ): WidgetSize {
             val options = runCatching { manager.getAppWidgetOptions(id) }.getOrNull()
+            // The application context is used deliberately: a widget has no
+            // Activity, so this is the only configuration available. It has not
+            // been verified on a folded or unfolded device, where the launcher's
+            // orientation and the app's can disagree.
             val landscape =
                 context.resources.configuration.orientation == Configuration.ORIENTATION_LANDSCAPE
             val widthDp = options?.getInt(
@@ -418,6 +429,22 @@ abstract class MediaWidget : AppWidgetProvider() {
             MediaWidgetSquare::class.java to SQUARE_WIDTH_DP,
             MediaWidgetWide::class.java to WIDE_WIDTH_DP,
         )
+
+        /**
+         * Whether any of [providers] still has an instance placed.
+         *
+         * Each is asked by its own component: [MediaWidget] is abstract and is
+         * not registered in the manifest, so its own id list is always empty.
+         * Callers pass only the providers they want checked — during
+         * [onDisabled] the firing provider's ids are already being withdrawn.
+         */
+        internal fun hasInstances(context: Context, providers: Iterable<Class<*>>): Boolean {
+            val manager = runCatching { AppWidgetManager.getInstance(context) }.getOrNull() ?: return false
+            return providers.any { provider ->
+                runCatching { manager.getAppWidgetIds(ComponentName(context, provider)) }
+                    .getOrNull()?.isNotEmpty() == true
+            }
+        }
 
         private val TRANSPORT =
             intArrayOf(R.id.widget_previous, R.id.widget_toggle, R.id.widget_next)

@@ -15,6 +15,7 @@ import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
+import org.json.JSONArray
 import org.json.JSONObject
 import java.util.concurrent.TimeUnit
 import java.util.Locale
@@ -143,7 +144,19 @@ internal object QuickJsExecutor {
                     pool.started = 1
                     pool.made += qjs
                     pool.free.trySend(qjs)
-                    synchronized(engineLock) { pools[moduleId] = pool }
+                    // The miss above was decided before this engine existed, so
+                    // another caller may have installed the same module since.
+                    // Overwriting it would orphan that pool — and leak every
+                    // interpreter in it — so the engine that lost is closed.
+                    val installed = synchronized(engineLock) {
+                        if (pools.containsKey(moduleId)) {
+                            false
+                        } else {
+                            pools[moduleId] = pool
+                            true
+                        }
+                    }
+                    if (!installed) runCatching { qjs.close() }
                 }
                 .onFailure { TrackLog.e(TAG, "  ✗ loadModule FAILED for $moduleId: ${it.message}", it) }
                 .map { }
@@ -153,8 +166,16 @@ internal object QuickJsExecutor {
     /** A fresh interpreter with [jsCode] evaluated into it, or a throw saying why not. */
     private suspend fun newEngine(jsCode: String, fetchBase: String): QuickJs {
         val qjs = QuickJs.create(Dispatchers.Default)
-        qjs.maxStackSize = 512 * 1024L
         try {
+            // Module code is third-party and gets no ambient limits by default.
+            // 32 MB of VM heap and 20 s of wall clock bound what one call can
+            // cost the host; the stack ceiling was already here. The timeout is
+            // a ceiling on runaway code, not a budget to spend: the slowest
+            // module measured 7.7 s, so 8 s was close enough to it to turn a
+            // slow lookup into a failure.
+            qjs.memoryLimit = 32L * 1024 * 1024
+            qjs.evaluationTimeoutMillis = 20_000
+            qjs.maxStackSize = 512 * 1024L
             bindConsole(qjs)
             bindAsyncFetch(qjs, fetchBase)
 
@@ -228,7 +249,7 @@ internal object QuickJsExecutor {
 
     // ── Call ─────────────────────────────────────────────────────────────
 
-    suspend fun callExport(moduleId: String, functionName: String, args: List<String>): Result<String> {
+    suspend fun callExport(moduleId: String, functionName: String, args: List<Any?>): Result<String> {
         val pool = synchronized(engineLock) { pools[moduleId] }
             ?: return Result.failure(IllegalStateException("Module $moduleId is not loaded"))
 
@@ -255,16 +276,20 @@ internal object QuickJsExecutor {
         qjs: QuickJs,
         moduleId: String,
         functionName: String,
-        args: List<String>,
+        args: List<Any?>,
     ): Result<String> =
         run {
             runCatching {
-                val hasFn = qjs.evaluate<String>("typeof __spine_mod['$functionName']")
+                val fnLiteral = jsStringLiteral(functionName)
+                val hasFn = qjs.evaluate<String>("typeof __spine_mod[$fnLiteral]")
                 if (hasFn != "function") {
                     throw IllegalStateException("$functionName is not a function on module $moduleId")
                 }
 
-                val argsStr = args.joinToString(",")
+                // The arguments are serialised, never spliced into source: a
+                // track title is text from a catalogue and would otherwise be
+                // free to close its own string literal and run as code.
+                val argsLiteral = jsStringLiteral(JSONArray(args).toString())
 
                 // evaluate() converts a Promise via toString() instead of awaiting it.
                 // Workaround: store the resolved JSON in a global var inside the async
@@ -273,13 +298,13 @@ internal object QuickJsExecutor {
                     """
                     var __spine_resolved_json = undefined;
                     (async function() {
-                        var __fn = __spine_mod['$functionName'];
+                        var __fn = __spine_mod[$fnLiteral];
                         if (!__fn) {
-                            __spine_resolved_json = JSON.stringify({ error: '$functionName not found' });
+                            __spine_resolved_json = JSON.stringify({ error: ${jsStringLiteral("$functionName not found")} });
                             return;
                         }
                         try {
-                            var r = await __fn($argsStr);
+                            var r = await __fn.apply(undefined, JSON.parse($argsLiteral));
                             __spine_resolved_json = typeof r === 'string' ? r : JSON.stringify(r);
                         } catch(e) {
                             __spine_resolved_json = JSON.stringify({ error: e && e.message ? e.message : String(e) });
@@ -462,7 +487,17 @@ internal object QuickJsExecutor {
     // ── URL resolution ───────────────────────────────────────────────────
 
     private fun resolveUrl(url: String, base: String): String {
-        if (url.startsWith("http://") || url.startsWith("https://")) return url
+        val absolute = url.startsWith("http://", ignoreCase = true) ||
+            url.startsWith("https://", ignoreCase = true)
+        if (absolute) {
+            // A module may name any host. Restricting it to the one that served
+            // its JS was tried and dropped: the client below carries no cookie
+            // jar and no auth header, so the fetch has no session to leak, and
+            // a module that wanted to send data elsewhere could equally send it
+            // to its own origin, which such a rule has to allow anyway. What it
+            // did cost was every module whose API lives on a different host.
+            return url
+        }
         if (base.isEmpty()) return url
         return if (url.startsWith("/")) {
             val scheme = base.substringBefore("://")
@@ -625,3 +660,15 @@ internal object QuickJsExecutor {
         }
     """
 }
+
+/**
+ * A JS string literal holding [value], safe to paste into source.
+ *
+ * [JSONObject.quote] covers quotes, backslashes and control characters. It
+ * leaves U+2028 and U+2029 alone because JSON allows them, but older JS
+ * string literals end a line there, so they are escaped by hand.
+ */
+private fun jsStringLiteral(value: String): String =
+    JSONObject.quote(value)
+        .replace("\u2028", "\\u2028")
+        .replace("\u2029", "\\u2029")

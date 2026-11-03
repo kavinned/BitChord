@@ -1,7 +1,9 @@
 package com.music.bitchord
 
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.unit.Density
+import androidx.compose.ui.unit.dp
 import com.music.bitchord.data.settings.AppSettings
 import com.music.bitchord.ui.components.miniPlayerArtShape
 import org.junit.Assert.assertEquals
@@ -20,7 +22,7 @@ class MiniPlayerArtworkShapeTest {
 
     @Test
     fun `default shape has 8dp uniform corners`() {
-        val shape = miniPlayerArtShape(rounded = false)
+        val shape = RoundedCornerShape(8.dp)
         assertEquals(8f, shape.topStart.toPx(artSize, density), 0.001f)
         assertEquals(8f, shape.topEnd.toPx(artSize, density), 0.001f)
         assertEquals(8f, shape.bottomStart.toPx(artSize, density), 0.001f)
@@ -29,7 +31,7 @@ class MiniPlayerArtworkShapeTest {
 
     @Test
     fun `rounded shape has 20dp outer corners and 0dp inner corners`() {
-        val shape = miniPlayerArtShape(rounded = true)
+        val shape = miniPlayerArtShape(20.dp)
         assertEquals(20f, shape.topStart.toPx(artSize, density), 0.001f)
         assertEquals(0f, shape.topEnd.toPx(artSize, density), 0.001f)
         assertEquals(20f, shape.bottomStart.toPx(artSize, density), 0.001f)

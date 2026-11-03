@@ -29,6 +29,10 @@ import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.role
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.toggleableState
+import androidx.compose.ui.state.ToggleableState
 import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
 import com.music.bitchord.ui.haptics.Haptic
@@ -112,7 +116,12 @@ fun IosSwitch(
                         onValueChange = onCheckedChange,
                     )
                 } else {
-                    Modifier
+                    // The row around it owns the tap, but a screen reader still
+                    // has to be able to name this as a switch and say its state.
+                    Modifier.semantics {
+                        role = Role.Switch
+                        toggleableState = ToggleableState(checked)
+                    }
                 },
             )
             .size(TrackWidth, TrackHeight)

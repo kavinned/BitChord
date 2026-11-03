@@ -21,6 +21,7 @@ import androidx.compose.ui.layout.layout
 import androidx.compose.ui.unit.Constraints
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.media3.common.AudioAttributes
 import androidx.media3.common.C
 import androidx.media3.common.MediaItem
 import androidx.media3.common.PlaybackException
@@ -97,6 +98,10 @@ object MusicVideoEngine {
 
     private var controller: Player? = null
     private var player: ExoPlayer? = null
+
+    /** Kept from the first claim, so a player released with the picture can come back. */
+    private var appContext: Context? = null
+
     private class Surface(val view: TextureView, val priority: Int)
 
     private val surfaces = ArrayList<Surface>()
@@ -214,7 +219,7 @@ object MusicVideoEngine {
         override fun onPlaybackStateChanged(playbackState: Int) {
             if (playbackState == Player.STATE_READY && seekStartedAt > 0L) {
                 val took = System.currentTimeMillis() - seekStartedAt
-                seekLeadMs = ((seekLeadMs + took) / 2).coerceIn(0L, 1_500L)
+                seekLeadMs = nextSeekLead(seekLeadMs, took)
                 seekStartedAt = 0L
             }
         }
@@ -241,7 +246,10 @@ object MusicVideoEngine {
                 load(id)
                 return
             }
-            noPicture += id
+            // A decoder that can't take the stream, or a broken container, fails
+            // the same way next time; a dropped connection or a server error does
+            // not, so only the former is given up on for the session.
+            if (isTerminalVideoError(error.errorCode)) noPicture += id
             unload()
         }
     }
@@ -266,6 +274,7 @@ object MusicVideoEngine {
         surfaces.removeAll { it.view === view }
         surfaces += Surface(view, priority)
         val app = view.context.applicationContext
+        appContext = app
         if (prefs == null) {
             prefs = app.getSharedPreferences("music_video", Context.MODE_PRIVATE).also { stored ->
                 val held = stored.getInt(KEY_QUALITY, 0).takeIf { it > 0 }
@@ -286,10 +295,11 @@ object MusicVideoEngine {
             if (_frameOn.value === view) _frameOn.value = null
             val next = top()
             if (next != null) {
-                exo.setVideoTextureView(next)
+                // The player may have been released and rebuilt since this claim.
+                player?.setVideoTextureView(next)
                 repaint()
             } else {
-                exo.clearVideoTextureView(view)
+                player?.clearVideoTextureView(view)
                 releaseJob = scope.launch {
                     delay(RELEASE_GRACE_MS)
                     if (surfaces.isEmpty()) unload()
@@ -299,15 +309,25 @@ object MusicVideoEngine {
     }
 
     private fun ensurePlayer(context: Context): ExoPlayer = player ?: ExoPlayer.Builder(context)
+        .setHandleAudioBecomingNoisy(false)
         .build()
         .apply {
+            // The music owns audio focus; this picture is its clock. Built with
+            // defaults it requested focus too, and Media3 then paused the song
+            // that was telling this video where to be.
+            setAudioAttributes(AudioAttributes.DEFAULT, /* handleAudioFocus = */ false)
             volume = 0f
             trackSelectionParameters = trackSelectionParameters.buildUpon()
                 .setTrackTypeDisabled(C.TRACK_TYPE_AUDIO, true)
                 .build()
             addListener(playerListener)
         }
-        .also { player = it }
+        .also { created ->
+            player = created
+            // A player rebuilt after a release comes back without an output;
+            // the surface that outlived the old one gets the new one.
+            top()?.let { created.setVideoTextureView(it) }
+        }
 
     /** A paused decoder handed a new surface draws nothing until asked to. */
     private fun repaint() {
@@ -392,7 +412,7 @@ object MusicVideoEngine {
     }
 
     private fun load(videoId: String) {
-        unload()
+        reset()
         loadedId = videoId
         val cap = capFor(videoId)
         loadedCap = cap
@@ -425,7 +445,7 @@ object MusicVideoEngine {
                 loadedId = null
                 return@launch
             }
-            val exo = player ?: return@launch
+            val exo = appContext?.let { ensurePlayer(it) } ?: return@launch
             val upstream = OkHttpDataSource.Factory(Http.client)
                 .setDefaultRequestProperties(stream.headers)
             val source = ProgressiveMediaSource.Factory(ChunkedDataSource.Factory(upstream, CHUNK_BYTES))
@@ -434,11 +454,11 @@ object MusicVideoEngine {
             _quality.value = _quality.value.copy(heights = stream.heights, activeHeight = stream.height)
             loadedProfile = stream.profileId
             val start = controller?.currentPosition?.coerceAtLeast(0L) ?: 0L
-            exo.setMediaSource(source, start + seekLeadMs)
+            // From the audio's own moment: a fresh load is not a seek, so a lead
+            // here would start every video ahead of it.
+            exo.setMediaSource(source, start)
             exo.playWhenReady = controller?.isPlaying == true
             exo.prepare()
-            lastSeekAt = System.currentTimeMillis()
-            seekStartedAt = lastSeekAt
             startSync()
         }
     }
@@ -452,13 +472,16 @@ object MusicVideoEngine {
         return stream
     }
 
-    private fun unload() {
+    /** Drops the loaded picture, keeping the player for the next one. */
+    private fun reset() {
         loadJob?.cancel()
         loadJob = null
         syncJob?.cancel()
         syncJob = null
         loadedId = null
         loadedProfile = null
+        lastSeekAt = 0L
+        seekStartedAt = 0L
         _shownVideoId.value = null
         _frameOn.value = null
         _quality.value = _quality.value.copy(heights = emptyList(), activeHeight = null)
@@ -467,6 +490,13 @@ object MusicVideoEngine {
             it.clearMediaItems()
         }
         while (streams.size > 8) streams.remove(streams.keys.first())
+    }
+
+    /** The picture and the player with it: nothing is left holding a decoder. */
+    private fun unload() {
+        reset()
+        player?.release()
+        player = null
     }
 
     private fun startSync() {
@@ -543,6 +573,29 @@ object MusicVideoEngine {
     )
 }
 
+/** How far ahead a seek may be aimed: past this the landing is a stall, not a seek. */
+private const val MAX_SEEK_LEAD_MS = 1_500L
+
+/** The running average of a seek's landing time, with one slow sample held down. */
+internal fun nextSeekLead(currentMs: Long, sampleMs: Long): Long =
+    (currentMs + sampleMs.coerceIn(0L, MAX_SEEK_LEAD_MS)) / 2
+
+/**
+ * Whether [errorCode] is one the same stream would meet again: the decoder
+ * cannot take it, or the container is broken. Everything else is the network
+ * or the server, and is worth another ask.
+ */
+internal fun isTerminalVideoError(errorCode: Int): Boolean = when (errorCode) {
+    PlaybackException.ERROR_CODE_DECODER_INIT_FAILED,
+    PlaybackException.ERROR_CODE_DECODER_QUERY_FAILED,
+    PlaybackException.ERROR_CODE_DECODING_FAILED,
+    PlaybackException.ERROR_CODE_DECODING_FORMAT_EXCEEDS_CAPABILITIES,
+    PlaybackException.ERROR_CODE_DECODING_FORMAT_UNSUPPORTED,
+    PlaybackException.ERROR_CODE_PARSING_CONTAINER_MALFORMED,
+    PlaybackException.ERROR_CODE_PARSING_CONTAINER_UNSUPPORTED -> true
+    else -> false
+}
+
 /**
  * Where the playing music video shows: [videoId]'s picture, fitted into or
  * cropped to these bounds. Shows nothing until a frame of that video has
@@ -577,6 +630,9 @@ internal fun AndroidMusicVideo(
     // only while it plays, and only on the surface its frames are reaching.
     val awake = rendered && playing
     LaunchedEffect(view, awake) { view?.keepScreenOn = awake }
+    // Dismissed while the picture was up: the effect above is cancelled with
+    // the flag still set, and nothing else recomputes it.
+    DisposableEffect(view) { onDispose { view?.keepScreenOn = false } }
 
     val report by rememberUpdatedState(onRenderedChanged)
     LaunchedEffect(rendered) { report(rendered) }

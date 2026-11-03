@@ -43,7 +43,6 @@ import org.jetbrains.compose.resources.stringResource
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -63,6 +62,7 @@ import coil3.request.ImageRequest
 import com.music.bitchord.data.model.Song
 import com.music.bitchord.ui.theme.HideSystemBars
 import kotlinx.coroutines.delay
+import java.util.concurrent.atomic.AtomicLong
 
 /** How long the controls stay over a playing video untouched. */
 private const val VIDEO_CONTROLS_IDLE_MS = 3_500L
@@ -89,12 +89,22 @@ internal fun FullscreenVideoPlayer(
 ) {
     HideSystemBars(true)
     var controlsShown by remember { mutableStateOf(true) }
-    // Bumped by every touch on the controls, so the idle timer starts over.
-    var touches by remember { mutableIntStateOf(0) }
-    LaunchedEffect(controlsShown, isPlaying, touches) {
-        if (controlsShown && isPlaying) {
-            delay(VIDEO_CONTROLS_IDLE_MS)
-            controlsShown = false
+    // Touches write this outside composition and the timer reads it, so a
+    // pointer move restarts the idle wait without recomposing the player.
+    val lastTouchNanos = remember { AtomicLong(0L) }
+    LaunchedEffect(controlsShown, isPlaying) {
+        if (!controlsShown || !isPlaying) return@LaunchedEffect
+        // A full wait from the moment the controls came up or play started;
+        // a touch after that pushes the deadline out.
+        val shownNanos = System.nanoTime()
+        while (true) {
+            val idleSince = maxOf(shownNanos, lastTouchNanos.get())
+            val left = VIDEO_CONTROLS_IDLE_MS - (System.nanoTime() - idleSince) / 1_000_000
+            if (left <= 0) {
+                controlsShown = false
+                return@LaunchedEffect
+            }
+            delay(left)
         }
     }
 
@@ -140,7 +150,7 @@ internal fun FullscreenVideoPlayer(
                         awaitPointerEventScope {
                             while (true) {
                                 awaitPointerEvent(PointerEventPass.Initial)
-                                touches++
+                                lastTouchNanos.set(System.nanoTime())
                             }
                         }
                     }
@@ -224,20 +234,28 @@ internal fun VideoCornerControls(
         verticalAlignment = Alignment.CenterVertically,
     ) {
         VideoQualityBox(onClick = onOpenQuality)
+        // The plate stays 30dp; the target around it is the 48dp a thumb needs
+        // to find over moving video.
         Box(
             modifier = Modifier
-                .size(30.dp)
-                .clip(RoundedCornerShape(8.dp))
-                .background(Color.Black.copy(alpha = 0.38f))
+                .size(48.dp)
                 .clickable(onClick = onToggleFullscreen),
             contentAlignment = Alignment.Center,
         ) {
-            Icon(
-                imageVector = if (fullscreen) Icons.Rounded.FullscreenExit else Icons.Rounded.Fullscreen,
-                contentDescription = null,
-                tint = Color.White,
-                modifier = Modifier.size(22.dp),
-            )
+            Box(
+                modifier = Modifier
+                    .size(30.dp)
+                    .clip(RoundedCornerShape(8.dp))
+                    .background(Color.Black.copy(alpha = 0.38f)),
+                contentAlignment = Alignment.Center,
+            ) {
+                Icon(
+                    imageVector = if (fullscreen) Icons.Rounded.FullscreenExit else Icons.Rounded.Fullscreen,
+                    contentDescription = null,
+                    tint = Color.White,
+                    modifier = Modifier.size(22.dp),
+                )
+            }
         }
     }
 }
@@ -258,27 +276,33 @@ private fun VideoQualityBox(onClick: () -> Unit) {
     val label = quality.selected()?.let(::videoQualityLabel) ?: "Auto"
     Box(
         modifier = Modifier
-            .height(30.dp)
-            .widthIn(min = 44.dp)
-            .clip(RoundedCornerShape(8.dp))
-            .background(Color.Black.copy(alpha = 0.38f))
-            .clickable(onClick = onClick)
-            .padding(horizontal = 8.dp),
+            .height(48.dp)
+            .clickable(onClick = onClick),
         contentAlignment = Alignment.Center,
     ) {
-        AnimatedContent(
-            targetState = label,
-            transitionSpec = { fadeIn(tween(220)) togetherWith fadeOut(tween(220)) },
-            label = "videoQualityLabel",
-        ) { text ->
-            Text(
-                text = text,
-                color = Color.White.copy(alpha = 0.85f),
-                fontSize = 11.sp,
-                fontWeight = FontWeight.Bold,
-                letterSpacing = 0.4.sp,
-                maxLines = 1,
-            )
+        Box(
+            modifier = Modifier
+                .height(30.dp)
+                .widthIn(min = 44.dp)
+                .clip(RoundedCornerShape(8.dp))
+                .background(Color.Black.copy(alpha = 0.38f))
+                .padding(horizontal = 8.dp),
+            contentAlignment = Alignment.Center,
+        ) {
+            AnimatedContent(
+                targetState = label,
+                transitionSpec = { fadeIn(tween(220)) togetherWith fadeOut(tween(220)) },
+                label = "videoQualityLabel",
+            ) { text ->
+                Text(
+                    text = text,
+                    color = Color.White.copy(alpha = 0.85f),
+                    fontSize = 11.sp,
+                    fontWeight = FontWeight.Bold,
+                    letterSpacing = 0.4.sp,
+                    maxLines = 1,
+                )
+            }
         }
     }
 }

@@ -141,7 +141,12 @@ class TransitionFilterProcessor : BaseAudioProcessor() {
         if (delaySeconds != echoSeconds || !echoEngaged) {
             val frames = (delaySeconds.coerceIn(0f, MAX_ECHO_SECONDS) * echoFormatRate).toInt()
             val needed = frames * echoFormatChannels
-            if (needed > echoRing.size) pendingEchoRing = FloatArray(needed)
+            // Always a new ring, and always here rather than on the audio
+            // thread. Reusing the old one would mean clearing it, and the
+            // controller cannot clear memory the outgoing echo is still
+            // reading. A ring this size is zeroed by the allocator anyway, so
+            // handing the audio thread a fresh one costs it nothing.
+            pendingEchoRing = FloatArray(needed)
             echoSeconds = delaySeconds
             echoGeneration++
         }
@@ -396,16 +401,18 @@ class TransitionFilterProcessor : BaseAudioProcessor() {
         echoDry = targetDry
     }
 
-    /** A new echo, on the audio thread: adopt any ring waiting for it and clear what it will use. */
+    /** A new echo, on the audio thread: adopt the zeroed ring the controller allocated for it. */
     private fun startEcho() {
         echoSeenGeneration = echoGeneration
-        pendingEchoRing?.let {
-            echoRing = it
+        val fresh = pendingEchoRing
+        if (fresh != null) {
+            echoRing = fresh
             pendingEchoRing = null
         }
         val channels = channelCount.coerceAtLeast(1)
         echoDelayFrames = (echoSeconds * sampleRate).toInt().coerceIn(0, echoRing.size / channels)
-        echoRing.fill(0f, 0, echoDelayFrames * channels)
+        // Nothing to clear: every ring that arrives here was allocated zeroed
+        // on the controller thread by setEcho, and a ring is never reused.
         echoLow.fill(0f)
         echoHigh.fill(0f)
         echoPosition = 0

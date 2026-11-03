@@ -87,7 +87,7 @@ object VolumeHud {
      * True while the full player is open: its own volume bar already shows
      * the level, and two of them would be one too many.
      */
-    @Volatile var suppressed = false
+    var suppressed by mutableStateOf(false)
 
     fun pulse(direction: Int, atLimit: Boolean) {
         _pulses.tryEmit(Pulse(direction, atLimit))

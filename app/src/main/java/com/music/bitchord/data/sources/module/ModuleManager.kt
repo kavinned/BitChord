@@ -13,6 +13,7 @@ import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json
 import okhttp3.Request
+import org.json.JSONObject
 
 /**
  * A module/index URL with its host hidden, for logging.
@@ -247,7 +248,7 @@ class ModuleManager {
         // can change the answer. The settings belong in the key as much as the
         // query does: the same search under a different quality tier is a
         // different question.
-        key = keyOf(loaded.module.id, query, limit.toString(), contextArg(settings)),
+        key = keyOf(loaded.module.id, query, limit.toString(), contextArg(settings).toString()),
         describe = { "▶ searchTracks() module=${loaded.module.id} query=\"$query\" limit=$limit" },
     ) {
         searchTracksNow(loaded, query, limit, settings)
@@ -265,7 +266,7 @@ class ModuleManager {
             val result = QuickJsExecutor.callExport(
                 moduleId = loaded.module.id,
                 functionName = "searchTracks",
-                args = listOf("\"$query\"", limit.toString(), contextArg),
+                args = listOf(query, limit, contextArg),
             ).getOrThrow()
             json.decodeFromString<ModuleSearchResponse>(result).also {
                 TrackLog.d(TAG, "  ✓ Parsed ${it.tracks.size} tracks (total=${it.total})")
@@ -293,7 +294,7 @@ class ModuleManager {
         quality: String = "",
         settings: Map<String, String> = emptyMap(),
     ): Result<ModuleStreamResponse> = streams.get(
-        key = keyOf(loaded.module.id, trackId, quality, contextArg(settings)),
+        key = keyOf(loaded.module.id, trackId, quality, contextArg(settings).toString()),
         describe = { "▶ getStreamUrl() module=${loaded.module.id} trackId=$trackId quality=$quality" },
     ) {
         getStreamUrlNow(loaded, trackId, quality, settings)
@@ -311,7 +312,7 @@ class ModuleManager {
             val result = QuickJsExecutor.callExport(
                 moduleId = loaded.module.id,
                 functionName = "getTrackStreamUrl",
-                args = listOf("\"$trackId\"", "\"$quality\"", contextArg),
+                args = listOf(trackId, quality, contextArg),
             ).getOrThrow()
             json.decodeFromString<ModuleStreamResponse>(result).also {
                 TrackLog.d(TAG, "  ✓ streamUrl=${it.streamUrl?.take(100) ?: "<none>"} quality=${it.track?.audioQuality}")
@@ -352,13 +353,21 @@ class ModuleManager {
      * the wrapper on the wrong side, so *no* module could read *any* setting
      * out of it: every lookup landed on undefined and fell through to the
      * module's own default. Silent, and worth exactly one misplaced brace.
+     *
+     * Built as data rather than a source string so a setting's value cannot
+     * end the object literal early.
      */
-    private fun contextArg(settings: Map<String, String>): String =
-        settings.entries.joinToString(
-            separator = ",",
-            prefix = "{settings:{",
-            postfix = "}}",
-        ) { (key, value) -> "\"$key\":{\"value\":\"$value\"}" }
+    private fun contextArg(settings: Map<String, String>): JSONObject =
+        JSONObject().apply {
+            put(
+                "settings",
+                JSONObject().apply {
+                    settings.forEach { (key, value) ->
+                        put(key, JSONObject().put("value", value))
+                    }
+                },
+            )
+        }
 
     // ── Lifecycle ─────────────────────────────────────────────────────────
 

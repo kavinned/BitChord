@@ -99,6 +99,9 @@ private val HOME_TITLE_LIFT = 28.dp
 private const val RECENTS_TITLE = "Recents"
 private const val RECENT_TRACKS_PER_COLUMN = 4
 
+/** A card's identity across a refreshed shelf, so the row keeps its composition. */
+internal fun ShelfItem.shelfKey(): Any = browseId ?: videoId ?: title
+
 private fun List<ShelfItem>.playingItemMatcher(song: Song?): (ShelfItem) -> Boolean {
     song ?: return { false }
     // The card that was played, when the shelf holds it, and only that one —
@@ -346,14 +349,15 @@ private fun RecentShelf(
 ) {
     Column(Modifier.padding(bottom = 26.dp)) {
         RecentSectionHeader(title = localizeShelfTitle(shelf.title), subtitle = localizeShelfSubtitle(shelf.subtitle))
-        val isCurrentItem = shelf.items.playingItemMatcher(currentSong)
+        val isCurrentItem = remember(shelf.items, currentSong) { shelf.items.playingItemMatcher(currentSong) }
+        val columns = remember(shelf.items) { shelf.items.chunked(RECENT_TRACKS_PER_COLUMN) }
         BoxWithConstraints {
             val columnWidth = trackColumnWidth(maxWidth)
             ShelfRow(
                 contentPadding = PaddingValues(horizontal = PAGE_GUTTER),
                 horizontalArrangement = Arrangement.spacedBy(12.dp),
             ) {
-                items(shelf.items.chunked(RECENT_TRACKS_PER_COLUMN)) { column ->
+                items(columns, key = { column -> column.first().shelfKey() }) { column ->
                     Column(Modifier.width(columnWidth)) {
                         column.forEach { item ->
                             RecentTrackRow(
@@ -742,7 +746,7 @@ private fun HeroShelf(
 ) {
     Column(Modifier.padding(bottom = 26.dp)) {
         SectionHeader(shelf.title, shelf.subtitle)
-        val isCurrentItem = shelf.items.playingItemMatcher(currentSong)
+        val isCurrentItem = remember(shelf.items, currentSong) { shelf.items.playingItemMatcher(currentSong) }
         // Measured rather than taken as a share of the parent, because the card
         // has a ceiling as well as a fraction — see [heroCardWidth]. A fixed
         // width is also the only one of the two the aspect ratio below can turn
@@ -754,7 +758,7 @@ private fun HeroShelf(
                 contentPadding = PaddingValues(horizontal = PAGE_GUTTER),
                 horizontalArrangement = Arrangement.spacedBy(14.dp),
             ) {
-                items(shelf.items) { item ->
+                items(shelf.items, key = { it.shelfKey() }) { item ->
                     HeroCard(
                         item = item,
                         onClick = { onItemClick(item) },
@@ -847,13 +851,13 @@ internal fun Shelf(
 ) {
     Column(Modifier.padding(bottom = 26.dp)) {
         SectionHeader(shelf.title, shelf.subtitle)
-        val isCurrentItem = shelf.items.playingItemMatcher(currentSong)
+        val isCurrentItem = remember(shelf.items, currentSong) { shelf.items.playingItemMatcher(currentSong) }
         ShelfRow(
             contentPadding = PaddingValues(horizontal = PAGE_GUTTER),
             horizontalArrangement = Arrangement.spacedBy(14.dp),
         ) {
             leadingCard?.let { card -> item(key = "leading") { card() } }
-            items(shelf.items) { item ->
+            items(shelf.items, key = { it.shelfKey() }) { item ->
                 if (shelf.layout == ShelfLayout.VIDEO) {
                     VideoShelfCard(
                         item = item,

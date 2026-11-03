@@ -1568,15 +1568,10 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 val accountId = _activeAccountId.value
                 val profileId = _activeProfileId.value
                 val session = accountId?.let { id -> authStore.sessions.firstOrNull { it.accountId == id } }
-                val updated = session?.let { saved -> saved.copy(
-                    name = account.name, email = account.email,
-                    profiles = saved.profiles.map { profile ->
-                        if (profile.profileId == profileId) profile.copy(
-                            name = account.name, handle = account.email, avatar = account.thumbnailUrl,
-                        ) else profile
-                    },
-                ) }
-                if (updated != null) {
+                val updated = session?.let { saved -> accountDetailsUpdate(saved, account, profileId) }
+                // Most fetches confirm what is already stored; rewriting the
+                // encrypted session list for those is pure Keystore work.
+                if (updated != null && updated != session) {
                     authStore.upsertSession(updated, activate = false)
                     _googleAccounts.value = authStore.sessions
                 }
@@ -1644,32 +1639,49 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     /**
+     * Bumped by every artwork pass. A thumbnail from a list that has since been
+     * replaced backs off rather than painting onto the new one.
+     */
+    private val artworkGeneration = AtomicLong(0L)
+
+    /**
      * Category buttons do not carry thumbnails themselves. Resolve a small
      * number at a time from the shelves they open, so the grid gains real art
      * without saturating the browse client or delaying the category list.
+     *
+     * Publishing is coalesced rather than done per thumbnail: one emission per
+     * thumbnail is one full-grid recomposition per thumbnail, and the grid is
+     * the same list underneath — only one cell's art actually changed.
      */
     private fun loadMoodGenreArtwork(sections: List<MoodGenreSection>) {
+        val generation = artworkGeneration.incrementAndGet()
         viewModelScope.launch {
             val limiter = Semaphore(4)
+            val resolved = ConcurrentHashMap<String, String>()
+            var lastPublish = 0L
+            fun publish() {
+                if (artworkGeneration.get() != generation) return
+                val current = (_explore.value as? UiState.Success)?.data ?: return
+                _explore.value = UiState.Success(applyArtwork(current, resolved))
+            }
             coroutineScope {
                 sections.flatMap(MoodGenreSection::items).forEach { item ->
                     launch {
+                        if (artworkGeneration.get() != generation) return@launch
                         val artwork = limiter.withPermit {
                             YtMusicRepository.moodGenreArtwork(item.browseId, item.params).getOrNull()
                         } ?: return@launch
-                        val current = (_explore.value as? UiState.Success)?.data ?: return@launch
-                        _explore.value = UiState.Success(current.map { section ->
-                            section.copy(items = section.items.map { currentItem ->
-                                if (currentItem.browseId == item.browseId && currentItem.params == item.params) {
-                                    currentItem.copy(thumbnailUrl = artwork)
-                                } else {
-                                    currentItem
-                                }
-                            })
-                        })
+                        if (artworkGeneration.get() != generation) return@launch
+                        resolved["${item.browseId}|${item.params}"] = artwork
+                        val now = System.currentTimeMillis()
+                        if (now - lastPublish >= ARTWORK_PUBLISH_MS) {
+                            lastPublish = now
+                            publish()
+                        }
                     }
                 }
             }
+            publish()
         }
     }
 
@@ -1677,13 +1689,16 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         _selectedMoodGenre.value = item
         _moodGenreShelves.value = UiState.Loading
         viewModelScope.launch {
-            _moodGenreShelves.value = YtMusicRepository.moodGenreShelves(item.browseId, item.params).fold(
+            val state = YtMusicRepository.moodGenreShelves(item.browseId, item.params).fold(
                 onSuccess = { shelves ->
                     if (shelves.isEmpty()) UiState.Error(text(R.string.nothing_to_explore))
                     else UiState.Success(shelves)
                 },
                 onFailure = { UiState.Error(it.friendly()) },
             )
+            // A slow answer for a category already left must not replace the
+            // shelves of the one now open.
+            if (isStillOpenCategory(item, _selectedMoodGenre.value)) _moodGenreShelves.value = state
         }
     }
 
@@ -2577,6 +2592,9 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         /** Today's Top Picks row, kept so the next launch paints it before any request. */
         private const val TOP_PICKS_FILE = "top_picks_v4.json"
 
+        /** How often in-flight Explore artwork may be published; see [loadMoodGenreArtwork]. */
+        private const val ARTWORK_PUBLISH_MS = 150L
+
         /** Per-addon budget for the Addons search tab; a slow addon is left out, not waited on. */
         private const val ADDON_SEARCH_TIMEOUT_MS = 12_000L
         private const val ADDON_SEARCH_LIMIT = 20
@@ -3295,14 +3313,24 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         if (!_signedIn.value) return
         if (_channelsLoading.value) return
         if (!force && _channels.value.isNotEmpty()) return
+        val identity = listenerKey()
         viewModelScope.launch {
             _channelsLoading.value = true
-            YtMusicRepository.accountChannels()
-                .onSuccess {
-                    _channels.value = it
-                    persistDetectedProfiles(it)
-                }
-            _channelsLoading.value = false
+            try {
+                YtMusicRepository.accountChannels()
+                    .onSuccess { channels ->
+                        // The list belongs to the identity that asked for it: a
+                        // switch while it was on the wire must not store it
+                        // against the one now active.
+                        val accepted = channelsForListener(identity, listenerKey(), channels)
+                            ?: return@onSuccess
+                        _channels.value = accepted
+                        persistDetectedProfiles(accepted)
+                    }
+            } finally {
+                // A load started after a switch owns the flag now.
+                if (identity == listenerKey()) _channelsLoading.value = false
+            }
         }
     }
 
@@ -3548,10 +3576,17 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         _account.value = null
         likedSyncJob?.cancel()
         LikeState.clear()
+        // A list still in flight for the listener being left must not keep the
+        // next one from loading.
+        _channelsLoading.value = false
         _playlistsLoading.value = false
         _playlists.value = emptyList()
         _playlistOwned.value = emptyMap()
         ownershipInFlight.clear()
+        // Saved states for release cards belong to the account that left, and
+        // the loader short-circuits on a known id, so leaving them showed the
+        // previous session's heart forever.
+        _releaseLibrary.value = emptyMap()
         _songMenu.value = null
         _library.value = UiState.Loading
         _history.value = UiState.Loading
@@ -3602,6 +3637,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         _account.value = null
         Innertube.selectChannel(null, null)
         _channels.value = emptyList()
+        _channelsLoading.value = false
         _selectedChannelKey.value = null
         _selectedChannelName.value = null
         _googleAccounts.value = emptyList()
@@ -3612,9 +3648,11 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         // them would show the next signed-in user someone else's hearts.
         likedSyncJob?.cancel()
         LikeState.clear()
+        _playlistsLoading.value = false
         _playlists.value = emptyList()
         _playlistOwned.value = emptyMap()
         ownershipInFlight.clear()
+        _releaseLibrary.value = emptyMap()
         _songMenu.value = null
         loadHome()
     }
@@ -3641,3 +3679,67 @@ internal fun lyricsLookupKey(
     order: List<LyricsSource>,
     prioritizeSyllableSync: Boolean,
 ): List<Any> = listOf(videoId, sources, order, prioritizeSyllableSync)
+
+/**
+ * The channel list a request made under [captured] may still write, or null
+ * when the listener changed while it was on the wire. Two accounts must never
+ * end up sharing one list, even when the switch happened after the fetch began.
+ */
+internal fun channelsForListener(
+    captured: String?,
+    current: String?,
+    channels: List<AccountChannel>,
+): List<AccountChannel>? = channels.takeIf { captured == current }
+
+/** The stored session after [account]'s details are applied, unchanged when nothing differs. */
+internal fun accountDetailsUpdate(
+    session: GoogleAccountSession,
+    account: Account,
+    profileId: String?,
+): GoogleAccountSession = session.copy(
+    name = account.name, email = account.email,
+    profiles = session.profiles.map { profile ->
+        if (profile.profileId == profileId) profile.copy(
+            name = account.name, handle = account.email, avatar = account.thumbnailUrl,
+        ) else profile
+    },
+)
+
+/** True when [open] is still the category that a response for [captured] was fetched for. */
+internal fun isStillOpenCategory(captured: MoodGenre, open: MoodGenre?): Boolean =
+    open != null && open.browseId == captured.browseId && open.params == captured.params
+
+/**
+ * The Explore sections with [artwork] applied by category identity.
+ *
+ * Every item and section that gained nothing comes back as the same instance:
+ * Compose skips a node whose inputs did not change, so rebuilding a section
+ * because a category in a different section resolved would recompose it for
+ * no reason.
+ */
+internal fun applyArtwork(
+    sections: List<MoodGenreSection>,
+    artwork: Map<String, String>,
+): List<MoodGenreSection> {
+    var changed = false
+    val updated = sections.map { section ->
+        var sectionChanged = false
+        val items = section.items.map { item ->
+            val url = artwork["${item.browseId}|${item.params}"] ?: return@map item
+            if (url == item.thumbnailUrl) {
+                item
+            } else {
+                sectionChanged = true
+                item.copy(thumbnailUrl = url)
+            }
+        }
+        if (sectionChanged) {
+            changed = true
+            section.copy(items = items)
+        } else {
+            section
+        }
+    }
+    return if (changed) updated else sections
+}
+

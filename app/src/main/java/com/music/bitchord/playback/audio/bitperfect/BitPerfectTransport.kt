@@ -33,7 +33,13 @@ internal interface BitPerfectTransport {
     /** Integer precision on the wire: 16, 24 or 32. */
     val outputBits: Int
 
-    /** How many of [outputBits] the DAC actually resolves: 24 of a 32-bit USB slot, say. */
+    /**
+     * How many of [outputBits] are advertised as meaningful: 24 of a 32-bit USB
+     * slot, say. This is the endpoint's descriptor, the AudioTrack encoding or
+     * the opened stream's precision — whichever this path has — and is never
+     * measured at the physical output, so it must not be presented as what the
+     * DAC resolves.
+     */
     val validBits: Int get() = outputBits
 
     /** How much audio the transport itself buffers, in frames. */
@@ -59,7 +65,7 @@ internal interface BitPerfectTransport {
 }
 
 internal enum class BitPerfectDriver(val label: String) {
-    ANDROID_MIXER("Android bit-perfect mixer"),
+    ANDROID_MIXER("Android mixer (bit-perfect requested)"),
     USB_DIRECT("Direct USB"),
     AAUDIO_EXCLUSIVE("AAudio exclusive"),
 }

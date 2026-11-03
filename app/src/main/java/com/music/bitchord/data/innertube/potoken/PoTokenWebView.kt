@@ -66,7 +66,9 @@ class PoTokenWebView private constructor(
     private val exceptionHandler = CoroutineExceptionHandler { _, t ->
         onInitializationErrorCloseAndCancel(t)
     }
-    private lateinit var expirationInstant: Instant
+    // Deliberately in the past until the first integrity token arrives, so
+    // isExpired reads true ("not usable yet") rather than throwing.
+    private var expirationInstant: Instant = Instant.EPOCH
 
     //region Initialization
     init {

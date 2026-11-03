@@ -376,7 +376,7 @@ class CanvasVideoSpec(
     val refreshFrameEveryMs: Long?,
     val frameCapturePx: Int,
     val onCoverChanged: (Float) -> Unit,
-    val bottomFade: Float,
+    val bottomFade: () -> Float,
     val bottomFadeEndPx: Float?,
     val pausedForTransition: Boolean,
     val resumeDelayMs: Long,
@@ -407,7 +407,7 @@ fun CanvasArtworkPlayer(
     /** 0 for no frames at all, which saves a main-thread readback on each fade-in. */
     frameCapturePx: Int = CANVAS_FRAME_CAPTURE_PX,
     onCoverChanged: (Float) -> Unit = {},
-    bottomFade: Float = 0f,
+    bottomFade: () -> Float = { 0f },
     bottomFadeEndPx: Float? = null,
     pausedForTransition: Boolean = false,
     /** How long the clip holds still after [pausedForTransition] lifts before it plays on. */

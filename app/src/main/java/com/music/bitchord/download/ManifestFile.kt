@@ -8,6 +8,7 @@ import com.music.bitchord.download.Mp4Boxes.readU32
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.withContext
+import okhttp3.HttpUrl
 import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import okhttp3.Request
 import java.io.File
@@ -56,9 +57,21 @@ internal object ManifestFile {
         sink: OutputStream,
         onProgress: (Long, Long) -> Unit,
     ): Unit = withContext(Dispatchers.IO) {
+        val base = url.toHttpUrlOrNull() ?: error("Invalid manifest URL")
+
         fun fetch(target: String): ByteArray {
-            val request = Request.Builder().url(target).apply {
-                headers.forEach { (name, value) -> header(name, value) }
+            val resolved = target.toHttpUrlOrNull() ?: error("Invalid segment URL")
+            val request = Request.Builder().url(resolved).apply {
+                // The stream's headers go to the manifest's own origin and
+                // nowhere else. OkHttp drops them across a cross-host redirect,
+                // but a URL read out of a manifest document is not a redirect,
+                // so a manifest naming another host would be handed the
+                // Authorization or cookie it was minted for. A segment that
+                // genuinely needs those headers off-origin fails now instead of
+                // leaking them; one that does not need them still downloads.
+                if (sameOrigin(base, resolved)) {
+                    headers.forEach { (name, value) -> header(name, value) }
+                }
             }.build()
             return Http.client.newCall(request).execute().use { response ->
                 if (!response.isSuccessful) error("Segment failed (HTTP ${response.code})")
@@ -66,14 +79,13 @@ internal object ManifestFile {
             }
         }
 
-        val base = url.toHttpUrlOrNull() ?: error("Invalid manifest URL")
+        fun resolve(ref: String) = base.resolve(ref)?.toString() ?: error("Invalid segment URL")
         val index = String(fetch(url), Charsets.UTF_8)
         val (initRef, mediaRefs) = if (dash) {
             OfflineDash.parse(index).let { it.initialization to it.media }
         } else {
             hlsSegments(index)
         }
-        fun resolve(ref: String) = base.resolve(ref)?.toString() ?: error("Invalid segment URL")
         val total = mediaRefs.size + 1L
 
         val init = fetch(resolve(initRef))
@@ -88,6 +100,12 @@ internal object ManifestFile {
         assemble(cacheDir, extension, init, media, sink)
         sink.flush()
     }
+
+    /** Whether [target] shares [base]'s origin, and so may carry [base]'s headers. */
+    internal fun sameOrigin(base: HttpUrl, target: HttpUrl): Boolean =
+        target.scheme == base.scheme &&
+            target.host == base.host &&
+            target.port == base.port
 
     /** Everything after the fetching: [init] and [media] in, one [extension] file out. */
     internal fun assemble(cacheDir: File, extension: String, init: ByteArray, media: Sequence<ByteArray>, sink: OutputStream) {
@@ -111,6 +129,10 @@ internal object ManifestFile {
         if (playlist.contains("#EXT-X-KEY:") && !playlist.contains("METHOD=NONE")) {
             error("Encrypted HLS cannot be saved")
         }
+        // Each range names a slice of one shared file, so dropping the tags
+        // saves that file once per range and joins the copies — a result that
+        // is several times too large and does not play.
+        if (playlist.contains("#EXT-X-BYTERANGE")) error("Byte-range HLS cannot be saved")
         val init = Regex("""#EXT-X-MAP:.*URI="([^"]+)"""").find(playlist)?.groupValues?.get(1)
             ?: error("HLS playlist has no initialisation segment")
         val media = playlist.lineSequence().map(String::trim)

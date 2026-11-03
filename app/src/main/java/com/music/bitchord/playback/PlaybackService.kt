@@ -339,7 +339,7 @@ private fun Song.canStartStation(): Boolean =
 @UnstableApi
 class PlaybackService : MediaLibraryService() {
 
-    private var mediaSession: MediaLibrarySession? = null
+    @Volatile private var mediaSession: MediaLibrarySession? = null
     private val searchResults = ConcurrentHashMap<String, List<Song>>()
     private val searchBrowseResults = ConcurrentHashMap<String, List<BrowseItem>>()
     private val songCache = ConcurrentHashMap<String, Song>()
@@ -595,14 +595,14 @@ class PlaybackService : MediaLibraryService() {
      * [adoptPlayer] — so anything reading it must read it *now* rather than
      * capturing it.
      */
-    private var player: ExoPlayer? = null
+    @Volatile private var player: ExoPlayer? = null
 
     /**
      * The idle player. Between transitions it holds nothing; to arm one,
      * [CrossfadeController] loads it with the queue positioned on the incoming
      * track.
      */
-    private var spare: ExoPlayer? = null
+    @Volatile private var spare: ExoPlayer? = null
 
     private var crossfade: CrossfadeController? = null
 
@@ -737,6 +737,17 @@ class PlaybackService : MediaLibraryService() {
     private var discordPresenceUp = false
 
     private val scope = CoroutineScope(Dispatchers.Main + SupervisorJob())
+
+    /**
+     * One ordered lane for the two durable queue writes below.
+     *
+     * They rewrite different preference files, so the order between them does
+     * not matter — but keeping them on one lane means a burst of radio-queue
+     * commits cannot interleave with itself. The clears stay where they are,
+     * on the caller's thread: a `clear` applied later than a save wipes it, and
+     * the plain `apply` saves on the state-change path are not on this lane.
+     */
+    private val durableWriteDispatcher = Dispatchers.IO.limitedParallelism(1)
 
     /** Canonical context owner for the active local bounded album/playlist. */
     private val boundedContextRegistry = ContextRegistry { snapshot ->
@@ -2273,6 +2284,11 @@ class PlaybackService : MediaLibraryService() {
             if (holdsSwitchBar) {
                 AppSettings.versionAlignmentInProgress.value = true
             }
+            // The standby deck this swap configures and whether it ever became
+            // the active one. Both are read by the finally below, which has to
+            // undo a swap that was cancelled or threw halfway.
+            var swapDeck: ExoPlayer? = null
+            var committed = false
             try {
                 val startPosition = activePlayer.currentPosition
                 val alignmentOffsetMs = if (measureAlignment) {
@@ -2306,7 +2322,6 @@ class PlaybackService : MediaLibraryService() {
                     activePlayer.currentMediaItemIndex != currentIndex ||
                     activePlayer.currentMediaItem?.mediaId != sourceSong.videoId
                 ) {
-                    swappingMediaId = null
                     return@launch
                 }
 
@@ -2323,9 +2338,9 @@ class PlaybackService : MediaLibraryService() {
                     activePlayer.replaceMediaItem(currentIndex, targetMediaItem)
                     activePlayer.seekTo(currentIndex, pos)
                     if (wasPlaying) activePlayer.play()
+                    committed = true
                     onSwapCommitted?.invoke()
                     refreshCustomLayouts()
-                    swappingMediaId = null
                     return@launch
                 }
 
@@ -2337,6 +2352,7 @@ class PlaybackService : MediaLibraryService() {
                 val alignedStartPos = alignedPosition(activePlayer.currentPosition)
 
             // Reset and configure standby player
+            swapDeck = standbyPlayer
             configureStandby(standbyPlayer, activePlayer, newItems, currentIndex, alignedStartPos, mediaId)
 
             // Wait for standby to buffer and reach STATE_READY in the background
@@ -2347,10 +2363,6 @@ class PlaybackService : MediaLibraryService() {
                     activePlayer.currentMediaItemIndex != currentIndex
                 ) {
                     // Active player moved to another track or was changed
-                    standbyPlayer.stop()
-                    standbyPlayer.clearMediaItems()
-                    standbyPlayer.volume = 1f
-                    swappingMediaId = null
                     return@launch
                 }
 
@@ -2374,6 +2386,7 @@ class PlaybackService : MediaLibraryService() {
                 activePlayer.replaceMediaItem(currentIndex, targetMediaItem)
                 activePlayer.seekTo(currentIndex, pos)
                 if (wasPlaying) activePlayer.play()
+                committed = true
                 onSwapCommitted?.invoke()
                 onTrackBecameCurrent(
                     targetMediaItem,
@@ -2436,11 +2449,6 @@ class PlaybackService : MediaLibraryService() {
                     val progress = (elapsed.toFloat() / swapCrossfadeMs).coerceIn(0f, 1f)
 
                     if (player !== activePlayer || activePlayer.currentMediaItemIndex != currentIndex) {
-                        standbyPlayer.stop()
-                        standbyPlayer.clearMediaItems()
-                        standbyPlayer.volume = 1f
-                        activePlayer.volume = 1f
-                        swappingMediaId = null
                         return@launch
                     }
 
@@ -2465,6 +2473,7 @@ class PlaybackService : MediaLibraryService() {
 
                 // Adopt incoming player cleanly
                 adoptPlayerForVersionSwap(outgoing = activePlayer, incoming = standbyPlayer)
+                committed = true
                 onSwapCommitted?.invoke()
             } finally {
                 loudnessA.setBlendTrim(1f)
@@ -2474,8 +2483,26 @@ class PlaybackService : MediaLibraryService() {
                 }
             }
             } finally {
+                // Only the newest swap owns the marker, the deck and the
+                // volumes: an older one cancelled by it must not undo its work.
                 if (generation == versionSwapGeneration) {
                     AppSettings.versionAlignmentInProgress.value = false
+                    // The transition this marker describes has been reported by
+                    // now, so clearing it here is the one place every path goes
+                    // through rather than one branch clearing it and the next
+                    // leaving it set.
+                    swappingMediaId = null
+                    // A swap that never committed can stop anywhere in the fade,
+                    // leaving the standby deck playing at a partial gain while
+                    // the active one is quieted. Put both back.
+                    if (!committed) {
+                        swapDeck?.let { deck ->
+                            deck.stop()
+                            deck.clearMediaItems()
+                            deck.volume = 1f
+                        }
+                        activePlayer.volume = 1f
+                    }
                 }
             }
         }
@@ -4317,9 +4344,16 @@ class PlaybackService : MediaLibraryService() {
                 val live = this@PlaybackService.player ?: return@withContext
                 if (live.currentMediaItem?.mediaId != mediaId) return@withContext
                 swappingMediaId = mediaId
-                live.replaceMediaItem(live.currentMediaItemIndex, fallback)
-                live.seekTo(live.currentMediaItemIndex, position)
-                live.prepare()
+                try {
+                    live.replaceMediaItem(live.currentMediaItemIndex, fallback)
+                    live.seekTo(live.currentMediaItemIndex, position)
+                    live.prepare()
+                } finally {
+                    // The replace reports its transition before it returns; a
+                    // marker left set because this one did not would swallow
+                    // the next real playlist change.
+                    if (swappingMediaId == mediaId) swappingMediaId = null
+                }
             }
         }
         return true
@@ -5705,7 +5739,10 @@ class PlaybackService : MediaLibraryService() {
         // the stall [AudioCache]'s key factory documents. Free to wait for: the
         // old stream is still playing.
         delay(AUDITION_RELEASE_MS)
-        TrackLog.d("BitChord", AudioCache.cachedSummary(Uri.parse(upgradedUri)))
+        // The summary copies and sorts the span set under the cache's monitor.
+        withContext(Dispatchers.Default) {
+            TrackLog.d("BitChord", AudioCache.cachedSummary(Uri.parse(upgradedUri)))
+        }
         return warmedThrough
     }
 
@@ -5917,28 +5954,34 @@ class PlaybackService : MediaLibraryService() {
             }
             NerdStats.clearAlignmentOffset(mediaId)
             swappingMediaId = mediaId
-            val abandoned = item.localConfiguration?.uri
-            player.replaceMediaItem(
-                player.currentMediaItemIndex,
-                item.buildUpon()
-                    .setUri(previousUri)
-                    // The item being reverted may have declared DASH/HLS for
-                    // its upgrade. The previous stream must be sniffed afresh.
-                    .setMimeType(null)
-                    .build(),
-            )
-            player.seekTo(player.currentMediaItemIndex, position)
-            player.prepare()
-            // Whatever the replacement wrote is a prefix of a file nothing will
-            // ever finish, under a key the *next* upgrade of this track would
-            // key to as well — see [AudioCache.discardRendition]. Off the main
-            // thread and behind the same pause a recovery takes, because the
-            // source just released still holds the entry for a moment.
-            abandoned?.let {
-                launch(Dispatchers.IO) {
-                    delay(RECOVERY_DELAY_MS)
-                    AudioCache.discardRendition(it)
+            try {
+                val abandoned = item.localConfiguration?.uri
+                player.replaceMediaItem(
+                    player.currentMediaItemIndex,
+                    item.buildUpon()
+                        .setUri(previousUri)
+                        // The item being reverted may have declared DASH/HLS for
+                        // its upgrade. The previous stream must be sniffed afresh.
+                        .setMimeType(null)
+                        .build(),
+                )
+                player.seekTo(player.currentMediaItemIndex, position)
+                player.prepare()
+                // Whatever the replacement wrote is a prefix of a file nothing will
+                // ever finish, under a key the *next* upgrade of this track would
+                // key to as well — see [AudioCache.discardRendition]. Off the main
+                // thread and behind the same pause a recovery takes, because the
+                // source just released still holds the entry for a moment.
+                abandoned?.let {
+                    launch(Dispatchers.IO) {
+                        delay(RECOVERY_DELAY_MS)
+                        AudioCache.discardRendition(it)
+                    }
                 }
+            } finally {
+                // See the fallback above: the transition has already been
+                // reported, and a marker left set would swallow the next one.
+                if (swappingMediaId == mediaId) swappingMediaId = null
             }
         }
     }
@@ -6615,30 +6658,40 @@ class PlaybackService : MediaLibraryService() {
         if (ListenTogether.state.value.inParty) return
         if (player.mediaItemCount == 0) {
             persistedQueueStart = 0
+            // Synchronous on purpose: a clear that ran after a later save would
+            // wipe it, and the saves on the state-change path are not ordered
+            // against this lane.
             LastPlayed.clearImmediately()
             BoundedContextPersistence.clearImmediately()
             return
         }
         val range = LastPlayed.window(player.mediaItemCount, player.currentMediaItemIndex)
+        if (range.isEmpty()) return
         persistedQueueStart = range.first
-        LastPlayed.saveQueueImmediately(
-            songs = (0 until player.mediaItemCount).map { player.getMediaItemAt(it).toSong() },
-            index = player.currentMediaItemIndex,
-            positionMs = player.currentPosition,
-        )
-        saveBoundedContextSnapshot(player, immediately = true)
+        // ExoPlayer may be read only from this thread, so capture the bounded
+        // window first. A kill inside the hop below loses this one write: a
+        // cold start on the pre-radio queue, exactly what a kill a millisecond
+        // earlier already cost.
+        val songs = range.map { player.getMediaItemAt(it).toSong() }
+        val index = player.currentMediaItemIndex - range.first
+        val positionMs = player.currentPosition
+        val contextState = buildBoundedContextState(player)
+        scope.launch(durableWriteDispatcher) {
+            LastPlayed.saveQueueImmediately(songs = songs, index = index, positionMs = positionMs)
+            contextState?.let(BoundedContextPersistence::saveImmediately)
+        }
     }
 
-    /** Capture logical state and only the materialized bounded projection. */
-    private fun saveBoundedContextSnapshot(player: ExoPlayer, immediately: Boolean = false) {
-        if (ListenTogether.state.value.inParty) return
-        val window = boundedContextWindow ?: return
-        val context = boundedContextRegistry.snapshot() ?: return
-        val source = boundedContextSource ?: return
-        if (context.contextToken != boundedContextToken || context.songs.isEmpty()) return
+    /** Read the player and assemble the bounded projection, without touching disk. */
+    private fun buildBoundedContextState(player: ExoPlayer): BoundedContextPersistence.State? {
+        if (ListenTogether.state.value.inParty) return null
+        val window = boundedContextWindow ?: return null
+        val context = boundedContextRegistry.snapshot() ?: return null
+        val source = boundedContextSource ?: return null
+        if (context.contextToken != boundedContextToken || context.songs.isEmpty()) return null
         val currentIndex = player.currentMediaItemIndex.coerceIn(0, player.mediaItemCount - 1)
         val range = LastPlayed.window(player.mediaItemCount, currentIndex)
-        if (range.isEmpty()) return
+        if (range.isEmpty()) return null
         val entries = range.map { index ->
             val item = player.getMediaItemAt(index)
             BoundedContextPersistence.Entry(
@@ -6647,7 +6700,7 @@ class PlaybackService : MediaLibraryService() {
                 cycleId = if (item.queueTier == QueueTier.CONTEXT) item.contextCycleId else null,
             )
         }
-        val state = BoundedContextPersistence.State(
+        return BoundedContextPersistence.State(
             context = context,
             source = source,
             window = window.snapshot(),
@@ -6655,6 +6708,11 @@ class PlaybackService : MediaLibraryService() {
             currentIndex = currentIndex - range.first,
             positionMs = player.currentPosition,
         )
+    }
+
+    /** Capture logical state and only the materialized bounded projection. */
+    private fun saveBoundedContextSnapshot(player: ExoPlayer, immediately: Boolean = false) {
+        val state = buildBoundedContextState(player) ?: return
         if (immediately) BoundedContextPersistence.saveImmediately(state) else BoundedContextPersistence.save(state)
     }
 
@@ -6669,6 +6727,7 @@ class PlaybackService : MediaLibraryService() {
         repeatAllStashSeed = null
         sessionSongHistory.clear()
         persistedQueueStart = 0
+        // Synchronous for the same reason as the empty-queue branch above.
         LastPlayed.clearImmediately()
     }
 
@@ -8180,6 +8239,9 @@ class PlaybackService : MediaLibraryService() {
         castPlayback.release()
         closeAudioEffectSession()
         bluetoothTracker.stop()
+        // The attach callback is process-wide and captured this service: left
+        // in place it keeps the dead service and both players reachable.
+        UsbDirectDevices.onChanged = null
         audioManager?.unregisterAudioDeviceCallback(outputDeviceCallback)
         partySync?.stop()
         partySync = null
@@ -8970,6 +9032,24 @@ class PlaybackService : MediaLibraryService() {
      */
     private inner class MediaLibraryCallback : MediaLibrarySession.Callback {
 
+        /**
+         * Who may read the library and search it. The session is exported, so
+         * without this any app on the phone could browse the account and
+         * search it. The watch is the same package as this app (see
+         * wearos/build.gradle.kts), and the car controllers are the two the
+         * session already recognises for layouts.
+         *
+         * This deliberately does **not** gate the connection itself. Transport
+         * control is an ordinary capability that lock-screen widgets and
+         * headset buttons use from packages the app has never heard of, and
+         * refusing those at connect took a working widget away without
+         * protecting anything the library guards below do not already cover.
+         */
+        private fun isTrusted(session: MediaSession, controller: MediaSession.ControllerInfo): Boolean =
+            controller.packageName == packageName ||
+                session.isAutoCompanionController(controller) ||
+                session.isAutomotiveController(controller)
+
         override fun onConnect(
             session: MediaSession,
             controller: MediaSession.ControllerInfo,
@@ -9066,6 +9146,9 @@ class PlaybackService : MediaLibraryService() {
             browser: MediaSession.ControllerInfo,
             params: LibraryParams?,
         ): ListenableFuture<LibraryResult<MediaItem>> {
+            if (!isTrusted(session, browser)) {
+                return Futures.immediateFuture(LibraryResult.ofError(LibraryResult.RESULT_ERROR_PERMISSION_DENIED))
+            }
             val isRecent = params?.isRecent == true ||
                 params?.extras?.getBoolean("android.service.media.extra.RECENT") == true ||
                 params?.extras?.getBoolean("androidx.media.MediaBrowserCompat.EXTRA_RECENT") == true
@@ -9107,6 +9190,9 @@ class PlaybackService : MediaLibraryService() {
             pageSize: Int,
             params: LibraryParams?,
         ): ListenableFuture<LibraryResult<ImmutableList<MediaItem>>> = scope.future(Dispatchers.IO) {
+            if (!isTrusted(session, browser)) {
+                return@future LibraryResult.ofItemList(ImmutableList.of<MediaItem>(), params)
+            }
             val isGridFolder = parentId == MEDIA_ROOT_ID || parentId == MEDIA_PLAYLISTS_ID
             val items: List<MediaItem> = when (parentId) {
                 MEDIA_ROOT_ID -> listOf(
@@ -9294,6 +9380,9 @@ class PlaybackService : MediaLibraryService() {
             browser: MediaSession.ControllerInfo,
             mediaId: String,
         ): ListenableFuture<LibraryResult<MediaItem>> = scope.future(Dispatchers.IO) {
+            if (!isTrusted(session, browser)) {
+                return@future LibraryResult.ofError(LibraryResult.RESULT_ERROR_PERMISSION_DENIED)
+            }
             val item = when (mediaId) {
                 MEDIA_ROOT_ID -> MediaItem.Builder()
                     .setMediaId(MEDIA_ROOT_ID)
@@ -9347,18 +9436,25 @@ class PlaybackService : MediaLibraryService() {
             mediaSession: MediaSession,
             controller: MediaSession.ControllerInfo,
         ): ListenableFuture<MediaSession.MediaItemsWithStartPosition> = scope.future(Dispatchers.IO) {
-            // 1. If player currently holds items in its queue, resume from it
-            val activePlayer = player
-            if (activePlayer != null && activePlayer.mediaItemCount > 0) {
-                val currentItems = (0 until activePlayer.mediaItemCount).map { activePlayer.getMediaItemAt(it) }
-                val startIndex = activePlayer.currentMediaItemIndex.coerceIn(0, currentItems.size - 1)
-                val startPositionMs = activePlayer.currentPosition.coerceAtLeast(0L)
-                return@future MediaSession.MediaItemsWithStartPosition(
-                    ImmutableList.copyOf(currentItems),
-                    startIndex,
-                    startPositionMs,
-                )
+            // 1. If player currently holds items in its queue, resume from it.
+            // ExoPlayer is confined to the main thread and checks it on several
+            // of these reads, so the player half runs there; only the fallbacks
+            // below are slow enough to want the IO dispatcher.
+            val queued = withContext(Dispatchers.Main) {
+                val activePlayer = player
+                if (activePlayer == null || activePlayer.mediaItemCount == 0) {
+                    null
+                } else {
+                    MediaSession.MediaItemsWithStartPosition(
+                        ImmutableList.copyOf(
+                            (0 until activePlayer.mediaItemCount).map { activePlayer.getMediaItemAt(it) },
+                        ),
+                        activePlayer.currentMediaItemIndex.coerceIn(0, activePlayer.mediaItemCount - 1),
+                        activePlayer.currentPosition.coerceAtLeast(0L),
+                    )
+                }
             }
+            if (queued != null) return@future queued
 
             // 2. Fallback to local downloaded songs (offline-ready). Capped, as is
             // the device library below: this answers a headset's play button
@@ -9418,6 +9514,7 @@ class PlaybackService : MediaLibraryService() {
             query: String,
             params: LibraryParams?,
         ): ListenableFuture<LibraryResult<Void>> = scope.future(Dispatchers.IO) {
+            if (!isTrusted(session, browser)) return@future LibraryResult.ofVoid(params)
             val (songs, browses) = searchAll(query)
             storeSearchResults(query, songs, browses)
             session.notifySearchResultChanged(browser, query, songs.size + browses.size, params)
@@ -9432,6 +9529,9 @@ class PlaybackService : MediaLibraryService() {
             pageSize: Int,
             params: LibraryParams?,
         ): ListenableFuture<LibraryResult<ImmutableList<MediaItem>>> = scope.future(Dispatchers.IO) {
+            if (!isTrusted(session, browser)) {
+                return@future LibraryResult.ofItemList(ImmutableList.of<MediaItem>(), params)
+            }
             val cachedSongs = searchResults[query]
             val cachedBrowses = searchBrowseResults[query]
             val (songs, browses) = if (cachedSongs != null || cachedBrowses != null) {
@@ -9465,6 +9565,9 @@ class PlaybackService : MediaLibraryService() {
             controller: MediaSession.ControllerInfo,
             mediaItems: List<MediaItem>,
         ): ListenableFuture<List<MediaItem>> = scope.future(Dispatchers.IO) {
+            // A search passed in as a media item reaches the same catalog the
+            // browse and search callbacks are closed to.
+            if (!isTrusted(mediaSession, controller)) return@future emptyList()
             resolveMediaItems(mediaItems)
         }
 

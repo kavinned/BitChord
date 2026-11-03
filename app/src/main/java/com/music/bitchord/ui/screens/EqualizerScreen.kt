@@ -168,7 +168,14 @@ fun EqualizerScreen(
                         TonePad(
                             x = toneX,
                             y = toneY,
-                            onChange = { newX, newY -> AppSettings.setEqualizerTone(newX, newY) },
+                            // The curve follows the finger through the flows;
+                            // the setter, which also writes to disk, waits for
+                            // the finger to lift.
+                            onChange = { newX, newY ->
+                                AppSettings.equalizerToneX.value = newX
+                                AppSettings.equalizerToneY.value = newY
+                            },
+                            onCommit = { newX, newY -> AppSettings.setEqualizerTone(newX, newY) },
                             enabled = enabled,
                         )
                         ToneReadout(x = toneX, y = toneY)
@@ -205,7 +212,11 @@ fun EqualizerScreen(
                     ) {
                         BandSliders(
                             bands = bands,
-                            onChange = { AppSettings.setEqualizerBands(it) },
+                            onChange = { updated ->
+                                AppSettings.equalizerBands.value = updated
+                                AppSettings.equalizerPreset.value = EqualizerPreset.matching(updated)
+                            },
+                            onCommit = { AppSettings.setEqualizerBands(it) },
                             enabled = enabled,
                         )
                         RowDivider()
@@ -226,7 +237,8 @@ fun EqualizerScreen(
             ) {
                 BalanceControl(
                     balance = balance,
-                    onChange = { AppSettings.setEqualizerBalance(it) },
+                    onChange = { AppSettings.equalizerBalance.value = it },
+                    onCommit = { AppSettings.setEqualizerBalance(it) },
                     enabled = enabled,
                 )
             }
@@ -292,6 +304,7 @@ private fun TonePad(
     y: Int,
     enabled: Boolean,
     onChange: (Int, Int) -> Unit,
+    onCommit: (Int, Int) -> Unit,
 ) {
     val haptics = rememberHaptics()
     val dotColor = MaterialTheme.colorScheme.onSurfaceVariant
@@ -306,6 +319,7 @@ private fun TonePad(
     val latestX by rememberUpdatedState(x)
     val latestY by rememberUpdatedState(y)
     val currentOnChange by rememberUpdatedState(onChange)
+    val currentOnCommit by rememberUpdatedState(onCommit)
 
     // Spring, not tween: the puck has to keep up with a fast drag and still
     // settle rather than arrive and stop dead.
@@ -358,6 +372,7 @@ private fun TonePad(
                             report(change.position)
                         }
                     }
+                    currentOnCommit(lastX, lastY)
                 }
             },
     ) {
@@ -512,6 +527,7 @@ private fun BandSliders(
     bands: List<Float>,
     enabled: Boolean,
     onChange: (List<Float>) -> Unit,
+    onCommit: (List<Float>) -> Unit,
 ) {
     Row(
         modifier = Modifier
@@ -542,6 +558,9 @@ private fun BandSliders(
                     onChange = { updated ->
                         onChange(bands.toMutableList().also { it[index] = updated })
                     },
+                    onCommit = { updated ->
+                        onCommit(bands.toMutableList().also { it[index] = updated })
+                    },
                 )
                 Spacer(Modifier.height(8.dp))
                 Text(
@@ -561,6 +580,7 @@ private fun BandFader(
     value: Float,
     enabled: Boolean,
     onChange: (Float) -> Unit,
+    onCommit: (Float) -> Unit,
 ) {
     val haptics = rememberHaptics()
     val trackColor = MaterialTheme.colorScheme.outline
@@ -573,6 +593,7 @@ private fun BandFader(
     // back to whatever it was when this fader first composed.
     val latest by rememberUpdatedState(value)
     val currentOnChange by rememberUpdatedState(onChange)
+    val currentOnCommit by rememberUpdatedState(onCommit)
 
     Canvas(
         modifier = Modifier
@@ -611,6 +632,7 @@ private fun BandFader(
                             report(change.position)
                         }
                     }
+                    currentOnCommit(last)
                 }
             },
     ) {
@@ -696,6 +718,7 @@ private fun BalanceControl(
     balance: Float,
     enabled: Boolean,
     onChange: (Float) -> Unit,
+    onCommit: (Float) -> Unit,
 ) {
     val haptics = rememberHaptics()
     val trackColor = MaterialTheme.colorScheme.outline
@@ -704,6 +727,7 @@ private fun BalanceControl(
     // See [TonePad]: the gesture block outlives the composition that made it.
     val latest by rememberUpdatedState(balance)
     val currentOnChange by rememberUpdatedState(onChange)
+    val currentOnCommit by rememberUpdatedState(onCommit)
 
     Column(Modifier.padding(horizontal = ROW_INSET, vertical = 14.dp)) {
         Row(verticalAlignment = Alignment.CenterVertically) {
@@ -761,6 +785,7 @@ private fun BalanceControl(
                                 report(change.position)
                             }
                         }
+                        currentOnCommit(last)
                     }
                 },
         ) {

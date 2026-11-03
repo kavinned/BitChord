@@ -1,6 +1,7 @@
 package com.music.bitchord.data.lyrics
 
 import com.music.bitchord.data.Http
+import com.music.bitchord.data.boundedString
 import kotlinx.serialization.json.Json
 import okhttp3.Request
 import java.util.concurrent.TimeUnit
@@ -47,7 +48,7 @@ internal fun lyricsGet(url: String): String? = runCatching {
         .header("Accept", "application/json")
         .build()
     client.newCall(request).execute().use { response ->
-        if (response.isSuccessful) response.body?.string() else null
+        if (response.isSuccessful) response.body?.boundedString() else null
     }
 }.getOrNull()
 
@@ -60,7 +61,7 @@ internal fun lyricsGetBearer(url: String, bearer: String): String? = runCatching
         .header("Authorization", "Bearer $bearer")
         .build()
     authenticatedClient.newCall(request).execute().use { response ->
-        if (response.isSuccessful) response.body?.string() else null
+        if (response.isSuccessful) response.body?.boundedString() else null
     }
 }.getOrNull()
 
@@ -78,6 +79,6 @@ internal fun lyricsGetAuthorized(url: String, bearer: String): String? = runCatc
         .header("Referer", "https://music.apple.com/")
         .build()
     client.newCall(request).execute().use { response ->
-        if (response.isSuccessful) response.body?.string() else null
+        if (response.isSuccessful) response.body?.boundedString() else null
     }
 }.getOrNull()

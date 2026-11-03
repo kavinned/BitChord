@@ -149,7 +149,11 @@ object LyricsRepository {
                 } catch (cancelled: CancellationException) {
                     onSourceCancelled?.invoke(source)
                     throw cancelled
-                } catch (_: Exception) {
+                } catch (_: Throwable) {
+                    // Not Exception: an OutOfMemoryError from one oversized
+                    // body is an Error, and letting it escape here cancels the
+                    // parent scope and discards every sibling's finished
+                    // answer with it.
                     onSourceResult?.invoke(source, null)
                     null
                 }

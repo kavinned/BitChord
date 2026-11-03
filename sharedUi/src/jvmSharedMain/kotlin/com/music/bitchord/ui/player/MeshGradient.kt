@@ -9,7 +9,6 @@ import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.snap
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Canvas
-import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.Immutable
@@ -26,6 +25,7 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.graphics.drawscope.translate
 import androidx.compose.ui.graphics.toArgb
 import coil3.compose.LocalPlatformContext
 import com.music.bitchord.ui.graphics.FADE_CURVE_STOPS
@@ -129,13 +129,16 @@ fun MeshGradientBackground(
     // Each colour slot crossfades independently when the track (palette) changes,
     // unless "reduce animation" is on, in which case colours snap straight to target.
     val colorSpec: AnimationSpec<Color> = if (reduceAnimation || !animated) snap() else tween(colorFadeMillis)
+    // Held as State and read inside the draw lambda below. Read here they
+    // recomposed the whole gradient on every frame of a crossfade — and Home
+    // steps through its palettes, so on that screen the crossfade never ends.
     val animatedColors = tuned.mapIndexed { index, color ->
-        animateColorAsState(color, colorSpec, label = "meshColor$index").value
+        animateColorAsState(color, colorSpec, label = "meshColor$index")
     }
-    val baseColor by animateColorAsState(tuned.first().dimmed(), colorSpec, label = "meshBase")
+    val baseColor = animateColorAsState(tuned.first().dimmed(), colorSpec, label = "meshBase")
 
-    // Read in the draw lambda, not here: an Animatable read during draw
-    // invalidates only the drawing, leaving composition out of the loop.
+    // Not read in composition: an Animatable read there would recompose the
+    // whole gradient on every frame of a drift or a crossfade.
     val phase = remember { Animatable(0f) }
     LaunchedEffect(trackKey, reduceAnimation, continuous, animated, paused) {
         when {
@@ -172,6 +175,11 @@ fun MeshGradientBackground(
     // that is the far side of the window and nobody ever saw it, which is how it
     // went unnoticed; in a pane beside a page it was a hand's width of gradient
     // laid over the feed.
+    // One brush per blob, rebuilt only when its colour or the surface size
+    // moves. The drift used to rebuild all four — and their seventeen colour
+    // stops — on every frame the mesh drew, for a shape that was not changing.
+    val brushCache = remember { List(MESH_ANCHORS.size) { BlobBrushCache() } }
+
     Canvas(
         modifier = modifier
             .fillMaxSize()
@@ -180,40 +188,31 @@ fun MeshGradientBackground(
                 scaleX = 1.3f
                 scaleY = 1.3f
             }
-            .background(baseColor)
             .blur(blurRadius),
     ) {
-        val anchors = listOf(
-            Offset(0.20f, 0.25f),
-            Offset(0.80f, 0.20f),
-            Offset(0.75f, 0.80f),
-            Offset(0.25f, 0.75f),
-        )
-        val speeds = listOf(1f, -0.7f, 0.85f, -1.15f)
+        // The base wash used to be `.background(baseColor)` on the modifier,
+        // which read the animation in composition. It is the same rectangle,
+        // drawn one phase later.
+        drawRect(color = baseColor.value)
         val drift = phase.value
 
-        animatedColors.forEachIndexed { index, color ->
-            val anchor = anchors[index]
+        animatedColors.forEachIndexed { index, _ ->
+            val anchor = MESH_ANCHORS[index]
             val center = Offset(
-                x = (anchor.x + 0.16f * cos(drift * speeds[index] + index * 1.7f)) * size.width,
-                y = (anchor.y + 0.16f * sin(drift * speeds[index] * 0.9f + index * 2.3f)) * size.height,
+                x = (anchor.x + 0.16f * cos(drift * MESH_SPEEDS[index] + index * 1.7f)) * size.width,
+                y = (anchor.y + 0.16f * sin(drift * MESH_SPEEDS[index] * 0.9f + index * 2.3f)) * size.height,
             )
             val radius = size.maxDimension * 0.62f
-            drawCircle(
-                // Along smootherstep rather than a straight falloff: a straight one
-                // stops dead at the rim, and that corner showed as a ring where each
-                // blob ended, even through the blur.
-                brush = Brush.radialGradient(
-                    colorStops = Array(FADE_CURVE_STOPS + 1) { i ->
-                        val t = i / FADE_CURVE_STOPS.toFloat()
-                        t to color.copy(alpha = BLOB_ALPHA * (1f - smootherStep(t)))
-                    },
-                    center = center,
+            // The brush is built at the origin and the blob moved by the draw
+            // transform: a radial gradient bakes its centre, so a cached brush
+            // carrying one would leave every blob where it was first drawn.
+            translate(center.x, center.y) {
+                drawCircle(
+                    brush = brushCache[index].of(animatedColors[index].value, radius),
                     radius = radius,
-                ),
-                radius = radius,
-                center = center,
-            )
+                    center = Offset.Zero,
+                )
+            }
         }
 
         // Gentle scrim so white text stays legible over bright art.
@@ -230,6 +229,47 @@ fun MeshGradientBackground(
 
 /** A blob's opacity at its centre. */
 private const val BLOB_ALPHA = 0.85f
+
+/**
+ * A blob's radial brush, kept until its colour or the surface size changes.
+ * Built at the origin so the caller can place it with a draw transform.
+ */
+private class BlobBrushCache {
+    private var color: Color? = null
+    private var radius = 0f
+    private var brush: Brush? = null
+
+    fun of(color: Color, radius: Float): Brush {
+        val cached = brush
+        if (cached != null && color == this.color && radius == this.radius) return cached
+        // Along smootherstep rather than a straight falloff: a straight one
+        // stops dead at the rim, and that corner showed as a ring where each
+        // blob ended, even through the blur.
+        val rebuilt = Brush.radialGradient(
+            colorStops = Array(FADE_CURVE_STOPS + 1) { i ->
+                val t = i / FADE_CURVE_STOPS.toFloat()
+                t to color.copy(alpha = BLOB_ALPHA * (1f - smootherStep(t)))
+            },
+            center = Offset.Zero,
+            radius = radius,
+        )
+        this.color = color
+        this.radius = radius
+        brush = rebuilt
+        return rebuilt
+    }
+}
+
+/** Where the four blobs sit before their own drift, as a share of the surface. */
+private val MESH_ANCHORS = listOf(
+    Offset(0.20f, 0.25f),
+    Offset(0.80f, 0.20f),
+    Offset(0.75f, 0.80f),
+    Offset(0.25f, 0.75f),
+)
+
+/** How fast each blob drifts, and which way: irrational multiples, so it never repeats. */
+private val MESH_SPEEDS = listOf(1f, -0.7f, 0.85f, -1.15f)
 
 /**
  * How long each palette in a [cyclingMeshPalette] is held, which is also how

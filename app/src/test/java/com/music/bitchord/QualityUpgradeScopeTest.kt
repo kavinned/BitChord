@@ -1,7 +1,10 @@
 package com.music.bitchord
 
+import com.music.bitchord.data.sources.SourceStream
 import com.music.bitchord.playback.QualityUpgrade
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
+import org.junit.Assert.assertSame
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -65,6 +68,23 @@ class QualityUpgradeScopeTest {
         QualityUpgrade.onPlaybackStarted(mediaId, rendition = "original")
 
         assertTrue(QualityUpgrade.hasAnsweredFor(mediaId))
+    }
+
+    /**
+     * A parked upgrade's URL is signed and expires, and nothing removes it when
+     * its track simply finishes. Serving it later hands the player a dead URL;
+     * it has to become a fresh resolve instead.
+     */
+    @Test
+    fun `a parked upgrade is not served after its URL can have expired`() {
+        val stream = SourceStream(url = "https://cdn.example.com/upgrade.flac")
+        QualityUpgrade.force(mediaId, stream, at = 0L)
+
+        assertSame(stream, QualityUpgrade.forcedStream(mediaId, now = 1L))
+        assertSame(stream, QualityUpgrade.forcedStream(mediaId, now = QualityUpgrade.FORCED_TTL_MS))
+        assertNull(QualityUpgrade.forcedStream(mediaId, now = QualityUpgrade.FORCED_TTL_MS + 1))
+
+        QualityUpgrade.forget(mediaId)
     }
 
     /** One track's replay says nothing about another's. */

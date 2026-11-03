@@ -40,6 +40,23 @@ class SquirclePillShape(val exponent: Float = SQUIRCLE_PILL_EXPONENT) :
         bottomStart: CornerSize,
     ): CornerBasedShape = SquirclePillShape(exponent)
 
+    /**
+     * The outline last built, and the size it was built for.
+     *
+     * A pill whose width animates is asked for its outline twice in the same
+     * frame — once by `.clip` and once by `.background` — and both ask for the
+     * same size, so the second call is the same answer. Building it there is
+     * this class's whole cost: 128 segments per call, every frame of every
+     * slide.
+     *
+     * ponytail: one entry. One pill animating at a time is the only case on
+     * screen today; two of different widths animating together would miss
+     * every call, which is where it started. Make it a small size-keyed map if
+     * that ever shows up.
+     */
+    private var cachedFor = Size.Unspecified
+    private val cachedPath: Path by lazy { Path() }
+
     override fun createOutline(
         size: Size,
         topStart: Float,
@@ -50,9 +67,21 @@ class SquirclePillShape(val exponent: Float = SQUIRCLE_PILL_EXPONENT) :
     ): Outline {
         val r = size.minDimension / 2f
         if (r <= 0f) return Outline.Rectangle(size.toRect())
+        if (size != cachedFor) {
+            build(size, r)
+            cachedFor = size
+        }
+        // Handed back by reference and never touched again until the next size
+        // change, so the clip and the background draw the same path.
+        return Outline.Generic(cachedPath)
+    }
+
+    /** Rebuilds [cachedPath] as the pill's outline at [size]. */
+    private fun build(size: Size, r: Float) {
         val w = size.width
         val h = size.height
-        val path = Path()
+        val path = cachedPath
+        path.reset()
         // Clockwise from the top edge; each quarter centred `r` in from its corner.
         path.moveTo(r, 0f)
         path.lineTo(w - r, 0f)
@@ -64,7 +93,6 @@ class SquirclePillShape(val exponent: Float = SQUIRCLE_PILL_EXPONENT) :
         path.lineTo(0f, r)
         path.quarter(r, r, -1f, -1f, r, towardEdge = true)
         path.close()
-        return Outline.Generic(path)
     }
 
     /**

@@ -7,6 +7,7 @@ import com.music.bitchord.ui.AppUi
 import com.music.bitchord.sharedui.resources.*
 import org.jetbrains.compose.resources.painterResource
 import org.jetbrains.compose.resources.stringResource
+import com.music.bitchord.ui.player.PlayerSettings
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
@@ -730,6 +731,23 @@ fun Modifier.hangIntoGutter(outset: Dp): Modifier = layout { measurable, constra
 const val MOTION_FRAME_GAP_MS = 25L
 
 /**
+ * How long one decorative loop should wait before its next frame, counted off
+ * the wall clock rather than from its own last frame.
+ *
+ * Each of these loops wakes the whole page — see [MOTION_FRAME_GAP_MS] — so two
+ * of them running on their own timers cost the page a frame each, at whatever
+ * offset their start times left them. Measured off a clock they all share, they
+ * land on the same tick and the page is woken once for all of them.
+ *
+ * Never zero: a loop that found itself exactly on a tick waits a full gap rather
+ * than spinning out a frame with nothing new to draw.
+ */
+internal fun nextMotionTickDelayMs(
+    gapMs: Long = MOTION_FRAME_GAP_MS,
+    nowNanos: Long = System.nanoTime(),
+): Long = gapMs - (nowNanos / 1_000_000) % gapMs
+
+/**
  * Whether the playing bars may move. Off while the row they sit in isn't
  * really being looked at — Now Playing pulled up over the page, the app in
  * the background, or the page on its way out — when they would go on
@@ -765,15 +783,16 @@ fun SearchPlayingBars(modifier: Modifier = Modifier) {
     // re-lays out the row it sits in.
     val elapsedNanos = remember { mutableLongStateOf(0L) }
     val running = LocalPlayingBarsMotion.current
-    LaunchedEffect(running) {
-        if (!running) return@LaunchedEffect
+    val reduceAnimation by PlayerSettings.reduceAnimation.collectAsStateWithLifecycle()
+    LaunchedEffect(running, reduceAnimation) {
+        if (!running || reduceAnimation) return@LaunchedEffect
         var last = Long.MIN_VALUE
         while (true) {
             withFrameNanos { now ->
                 if (last != Long.MIN_VALUE) elapsedNanos.longValue += now - last
                 last = now
             }
-            delay(MOTION_FRAME_GAP_MS)
+            delay(nextMotionTickDelayMs())
         }
     }
     // The plate is a fixed square so only the bars move, never the box around them.

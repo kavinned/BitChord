@@ -98,6 +98,8 @@ import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.SideEffect
+import androidx.compose.runtime.saveable.Saver
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.saveable.rememberSaveableStateHolder
 import androidx.compose.runtime.setValue
@@ -820,11 +822,7 @@ private fun BitChordApp(
         dark = !darkTheme && !showNowPlaying && route != AppRoute.Replay && replayStory == null && !onboardingVisible,
     )
 
-    val homeState by viewModel.home.collectAsStateWithLifecycle()
-    val homeLoadingMore by viewModel.homeLoadingMore.collectAsStateWithLifecycle()
-    val homeRecentlyPlayedLoading by viewModel.homeRecentlyPlayedLoading.collectAsStateWithLifecycle()
     val topPicks by viewModel.topPicks.collectAsStateWithLifecycle()
-    val topPicksLoading by viewModel.topPicksLoading.collectAsStateWithLifecycle()
 
     // The top bar's icon is the quiet, always-there nudge; this is the
     // once-per-launch popup version of the same news. `updateDialogShown`
@@ -841,22 +839,20 @@ private fun BitChordApp(
      */
     val updateNotice = updateAvailable
 
-    LaunchedEffect(updateNotice) {
-        if (updateNotice != null && !updateDialogShown) {
+    // Keyed on the welcome as well: the flag is once per launch, so spending it
+    // while onboarding still covers the screen — or letting a Back press during
+    // onboarding close a dialog that was never drawn — lost it for the session.
+    LaunchedEffect(updateNotice, onboardingComplete) {
+        if (updateNotice != null && !updateDialogShown && onboardingComplete) {
             updateDialogShown = true
             showUpdateDialog = true
         }
     }
     val query by viewModel.query.collectAsStateWithLifecycle()
     val results by viewModel.results.collectAsStateWithLifecycle()
-    val exploreState by viewModel.explore.collectAsStateWithLifecycle()
     val selectedMoodGenre by viewModel.selectedMoodGenre.collectAsStateWithLifecycle()
-    val moodGenreShelves by viewModel.moodGenreShelves.collectAsStateWithLifecycle()
-    val libraryState by viewModel.library.collectAsStateWithLifecycle()
     val filter by viewModel.filter.collectAsStateWithLifecycle()
     val searchSource by viewModel.searchSource.collectAsStateWithLifecycle()
-    val libraryResults by viewModel.libraryResults.collectAsStateWithLifecycle()
-    val addonResults by viewModel.addonResults.collectAsStateWithLifecycle()
     // Collected rather than read once, so addon rows in search re-dim the
     // moment the quality setting, the connection or the watch's cap moves.
     val addonCeiling = AppSettings.ceilingFor(
@@ -890,20 +886,13 @@ private fun BitChordApp(
         }
     }
     val account by viewModel.account.collectAsStateWithLifecycle()
-    val selectedChannelName by viewModel.selectedChannelName.collectAsStateWithLifecycle()
     val googleAccounts by viewModel.googleAccounts.collectAsStateWithLifecycle()
     val activeAccountId by viewModel.activeAccountId.collectAsStateWithLifecycle()
     val activeProfileId by viewModel.activeProfileId.collectAsStateWithLifecycle()
-    val historyState by viewModel.history.collectAsStateWithLifecycle()
     val lyrics by viewModel.lyrics.collectAsStateWithLifecycle()
     val lyricsSource by viewModel.lyricsSource.collectAsStateWithLifecycle()
     val lyricsChecked by viewModel.lyricsChecked.collectAsStateWithLifecycle()
     val lyricsProviderStates by viewModel.lyricsProviderStates.collectAsStateWithLifecycle()
-    val searchHistory by viewModel.searchHistory.collectAsStateWithLifecycle()
-    val searchSuggestions by viewModel.suggestions.collectAsStateWithLifecycle()
-    val searchLoadingMore by viewModel.searchLoadingMore.collectAsStateWithLifecycle()
-    val searchScrollReset by viewModel.searchScrollReset.collectAsStateWithLifecycle()
-    val releaseLibrary by viewModel.releaseLibrary.collectAsStateWithLifecycle()
     // Local Music, Downloads and the other device folders draw as release
     // pages, but they have no artwork to wash the top inset in, so they keep
     // the plain bar; their top bar trades the overflow for a sort-and-view
@@ -992,14 +981,19 @@ private fun BitChordApp(
     // Playlists imported without (or instead of) a YouTube Music account live
     // in the app's own store, and sit on the same shelf as the downloaded ones.
     val localPlaylists by com.music.bitchord.data.spotify.LocalPlaylistStore.playlists.collectAsStateWithLifecycle()
-    val localPlaylistItems = localPlaylists.map { playlist ->
-        ShelfItem(
-            title = playlist.title,
-            subtitle = stringResource(R.string.local_playlist_subtitle, playlist.songs.size),
-            thumbnailUrl = playlist.songs.firstOrNull { !it.thumbnailUrl.isNullOrBlank() }?.thumbnailUrl,
-            videoId = null,
-            browseId = playlist.browseId,
-        )
+    // Only the Library tab reads these, but they were rebuilt on every root
+    // recomposition — which the bar's own slide makes frequent. Resolved off
+    // composition so the list can be remembered against the playlists.
+    val localPlaylistItems = remember(localPlaylists, context) {
+        localPlaylists.map { playlist ->
+            ShelfItem(
+                title = playlist.title,
+                subtitle = context.getString(R.string.local_playlist_subtitle, playlist.songs.size),
+                thumbnailUrl = playlist.songs.firstOrNull { !it.thumbnailUrl.isNullOrBlank() }?.thumbnailUrl,
+                videoId = null,
+                browseId = playlist.browseId,
+            )
+        }
     }
     // What a browse id is recorded under in Downloads.collections, when it names
     // a release downloaded whole — see BrowseTarget.downloadId. A downloaded
@@ -1236,7 +1230,11 @@ private fun BitChordApp(
     // that opening is on the stack, so back from a page opened off it returns
     // to where it was.
     val replayEntryId = navigator.entries.lastOrNull { it.route == AppRoute.Replay }?.id
-    val replayListState = remember(replayEntryId, replayLandingPage) { LazyListState() }
+    val replayListState = rememberSaveable(
+        replayEntryId,
+        replayLandingPage,
+        saver = LazyListState.Saver,
+    ) { LazyListState() }
     val replayScrolled by remember(replayListState) {
         derivedStateOf {
             replayListState.firstVisibleItemIndex > 0 ||
@@ -1251,7 +1249,9 @@ private fun BitChordApp(
     // can leave the incoming album attached to the disappearing artist/grid
     // layout and unable to consume scroll gestures. Keep one state per page
     // while it is on the navigation stack instead.
-    val detailListStates = remember { mutableMapOf<String, LazyListState>() }
+    val detailListStates = rememberSaveable(saver = releaseListStatesSaver) {
+        mutableMapOf<String, LazyListState>()
+    }
     val detailListState = topDetail?.browseId?.let { browseId ->
         detailListStates.getOrPut(browseId) { LazyListState() }
     } ?: remember { LazyListState() }
@@ -1291,7 +1291,6 @@ private fun BitChordApp(
     // and every glass surface on them recompose once per frame for the length of
     // a fold. Keyed on the labels so a locale change still rebuilds it.
     val homeLabel = stringResource(R.string.home)
-    val playLabel = stringResource(R.string.play)
     val exploreLabel = stringResource(R.string.explore)
     val libraryLabel = stringResource(R.string.library)
     val searchLabel = stringResource(R.string.search)
@@ -2676,33 +2675,42 @@ private fun BitChordApp(
                 val sourceId = displayedSong.playbackSourceId
 
                 // A context link is navigation, not another page stacked over
-                // Now Playing. Clear the current route before restoring it.
+                // Now Playing. The branches that navigate clear the current
+                // route before restoring it; a shared link opens in the browser
+                // and leaves what the user was reading where it was.
                 dismissPlayer()
-                navigator.clear()
 
                 when (sourceType) {
                     PlaybackSourceType.BROWSE -> {
                         val id = sourceId ?: return@openSource
+                        navigator.clear()
                         viewModel.closeMoodGenre()
                         viewModel.openDetail(id, sourceTitle)
                     }
                     PlaybackSourceType.HOME -> {
+                        navigator.clear()
                         viewModel.closeMoodGenre()
                         selectedTab = TAB_HOME
                     }
                     PlaybackSourceType.SEARCH -> {
+                        navigator.clear()
                         viewModel.closeMoodGenre()
                         selectedTab = TAB_SEARCH
                     }
                     PlaybackSourceType.HISTORY -> {
+                        navigator.clear()
                         navigator.push(AppRoute.History)
                         viewModel.loadHistory()
                     }
                     PlaybackSourceType.REPLAY -> {
+                        navigator.clear()
                         replayLandingPage = ReplayStoryPage.INTRO
                         navigator.push(AppRoute.Replay)
                     }
-                    PlaybackSourceType.EXPLORE -> selectedTab = TAB_EXPLORE
+                    PlaybackSourceType.EXPLORE -> {
+                        navigator.clear()
+                        selectedTab = TAB_EXPLORE
+                    }
                     PlaybackSourceType.SHARED_LINK -> {
                         val id = sourceId ?: return@openSource
                         context.startActivity(
@@ -2782,7 +2790,7 @@ private fun BitChordApp(
         val replayDrawable = replay.summary?.isEmpty == false
         BackHandler(enabled = replayDrawable && replayStory != null && !showReplayShare) { replayStory = null }
         BackHandler(enabled = replayDrawable && showReplayShare) { showReplayShare = false }
-        BackHandler(enabled = showUpdateDialog) { showUpdateDialog = false }
+        BackHandler(enabled = showUpdateDialog && onboardingComplete) { showUpdateDialog = false }
         BackHandler(enabled = showListenBrainzLogin) { showListenBrainzLogin = false }
         BackHandler(enabled = showLastfmLogin) { showLastfmLogin = false }
         BackHandler(enabled = discordDialog != null) { discordDialog = null }
@@ -2898,8 +2906,13 @@ private fun BitChordApp(
                     // exit drawing whatever is underneath instead of itself.
                     // Per slot, since each is remembered against its own key.
                     val held = remember(key) { mutableStateOf(live) }
-                    if (live != null) held.value = live
-                    val page = held.value
+                    // Read the live page first, so a page that has just arrived
+                    // never spends a frame drawing the stale entry.
+                    val page = live ?: held.value
+                    // Written after composition rather than during it: the last
+                    // live page is still kept for the fade-out, without
+                    // invalidating this page mid-transition on every change.
+                    SideEffect { if (live != null) held.value = live }
                     // This state belongs to this AnimatedContent slot, not to
                     // whichever detail happens to be at the top of the stack
                     // while the slot is fading out.
@@ -2907,6 +2920,31 @@ private fun BitChordApp(
                         detailListStates.getOrPut(key) { LazyListState() }
                     }
                     val pageContent: @Composable () -> Unit = {
+                        // Collected here, where they are read, rather than at
+                        // the top of BitChordApp. `collectAsStateWithLifecycle`
+                        // reads its state where the value is declared, so a
+                        // declaration up there put every one of these emissions
+                        // in the app's own restart scope — a home row landing
+                        // re-ran this whole screen. Down here the read lands in
+                        // the page slot, which is the only thing they change.
+                        // The ones still declared above are the ones the mini
+                        // player, the sheets and the search overlay read too.
+                        val homeState by viewModel.home.collectAsStateWithLifecycle()
+                        val homeLoadingMore by viewModel.homeLoadingMore.collectAsStateWithLifecycle()
+                        val homeRecentlyPlayedLoading by viewModel.homeRecentlyPlayedLoading.collectAsStateWithLifecycle()
+                        val topPicksLoading by viewModel.topPicksLoading.collectAsStateWithLifecycle()
+                        val exploreState by viewModel.explore.collectAsStateWithLifecycle()
+                        val moodGenreShelves by viewModel.moodGenreShelves.collectAsStateWithLifecycle()
+                        val libraryState by viewModel.library.collectAsStateWithLifecycle()
+                        val libraryResults by viewModel.libraryResults.collectAsStateWithLifecycle()
+                        val addonResults by viewModel.addonResults.collectAsStateWithLifecycle()
+                        val selectedChannelName by viewModel.selectedChannelName.collectAsStateWithLifecycle()
+                        val historyState by viewModel.history.collectAsStateWithLifecycle()
+                        val searchHistory by viewModel.searchHistory.collectAsStateWithLifecycle()
+                        val searchSuggestions by viewModel.suggestions.collectAsStateWithLifecycle()
+                        val searchLoadingMore by viewModel.searchLoadingMore.collectAsStateWithLifecycle()
+                        val searchScrollReset by viewModel.searchScrollReset.collectAsStateWithLifecycle()
+                        val releaseLibrary by viewModel.releaseLibrary.collectAsStateWithLifecycle()
                         if (pageRoute == AppRoute.History) {
                             HistoryScreen(
                                 state = historyState,
@@ -3119,7 +3157,7 @@ private fun BitChordApp(
                                 // the record as well as the list, so downloading an album
                                 // while its folder is open adds the folder rather than
                                 // waiting for the page to be reopened.
-                                val downloadCollections = remember(folderSongs, savedCollections, isDownloads) {
+                                val downloadCollections = remember(page.browseId, folderSongs.size, savedCollections, isDownloads) {
                                     if (isDownloads) Downloads.collectionsAmong(folderSongs) else emptyList()
                                 }
                                 LocalFolder(
@@ -3762,7 +3800,7 @@ private fun BitChordApp(
                             detail != null -> detail.title
                             selectedMoodGenre != null -> selectedMoodGenre?.title.orEmpty()
                             else -> tabs[selectedTab].let {
-                                if (it.label == "Play") stringResource(R.string.listen_now) else it.label
+                                if (selectedTab == TAB_HOME) stringResource(R.string.listen_now) else it.label
                             }
                         }
                     },
@@ -3944,9 +3982,10 @@ private fun BitChordApp(
                                         expanded = librarySortMenuOpen,
                                         onDismissRequest = { librarySortMenuOpen = false },
                                     ) {
-                                        LibrarySort.entries.forEach { option ->
+                                        val labels = LibrarySort.entries.map { it.localizedLabel() }
+                                        LibrarySort.entries.forEachIndexed { index, option ->
                                             DropdownMenuItem(
-                                                text = { Text(option.localizedLabel()) },
+                                                text = { Text(labels[index]) },
                                                 trailingIcon = if (option == librarySort) {
                                                     { Icon(Icons.Rounded.Check, contentDescription = null) }
                                                 } else null,
@@ -5789,6 +5828,9 @@ private fun BitChordApp(
         }
 
         if (confirmJioSaavn) {
+            // The alert is a plain box, not a dialog, so it registers nothing
+            // itself: without this, Back walks the page out from under it.
+            BackHandler { confirmJioSaavn = false }
             ConfirmationAlert(
                 hazeState = hazeState,
                 title = stringResource(R.string.enable_jiosaavn),
@@ -5877,6 +5919,28 @@ private val OnboardingDismissEasing = CubicBezierEasing(0.32f, 0.72f, 0f, 1f)
 private fun tween(durationMillis: Int) =
     androidx.compose.animation.core.tween<Float>(durationMillis)
 
+/**
+ * Release pages' scroll offsets survive activity recreation the way tabs' do:
+ * not a rotation (the manifest handles that in place), but a theme, locale or
+ * font-scale change rebuilds the activity and a long album would jump back to
+ * the top. [LazyListState] is not itself saveable, so the map goes as flat
+ * browse-id/index/offset triples.
+ */
+internal val releaseListStatesSaver = Saver<MutableMap<String, LazyListState>, List<Any>>(
+    save = { states ->
+        states.entries.flatMap { (id, state) ->
+            listOf(id, state.firstVisibleItemIndex, state.firstVisibleItemScrollOffset)
+        }
+    },
+    restore = { flat ->
+        mutableMapOf<String, LazyListState>().apply {
+            for (i in flat.indices step 3) {
+                put(flat[i] as String, LazyListState(flat[i + 1] as Int, flat[i + 2] as Int))
+            }
+        }
+    },
+)
+
 @Composable
 private fun LibrarySort.localizedLabel(): String = when (this) {
     LibrarySort.DEFAULT -> stringResource(R.string.sort_default)
@@ -5934,15 +5998,16 @@ private fun FrostedSortMenu(
                 )
             }
         }
-        SongSort.entries
+        val options = SongSort.entries
             .filter { it != SongSort.DATE_ADDED_ASC && it != SongSort.DATE_ADDED_DESC }
-            .forEach { option ->
-                FrostedMenuRow(
-                    label = option.localizedLabel(),
-                    checked = option == selected,
-                    onClick = { onSelect(option) },
-                )
-            }
+        val labels = options.map { it.localizedLabel() }
+        options.forEachIndexed { index, option ->
+            FrostedMenuRow(
+                label = labels[index],
+                checked = option == selected,
+                onClick = { onSelect(option) },
+            )
+        }
     }
 }
 
@@ -5972,9 +6037,10 @@ private fun FrostedFolderMenu(
             thickness = 0.5.dp,
             color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f),
         )
-        LocalMusicSort.entries.forEach { option ->
+        val localSortLabels = LocalMusicSort.entries.map { it.localizedLabel() }
+        LocalMusicSort.entries.forEachIndexed { index, option ->
             FrostedMenuRow(
-                label = option.localizedLabel(),
+                label = localSortLabels[index],
                 checked = option == sort,
                 onClick = { onSort(option) },
             )

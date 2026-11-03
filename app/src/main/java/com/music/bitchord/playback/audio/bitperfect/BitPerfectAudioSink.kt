@@ -230,6 +230,10 @@ internal class BitPerfectAudioSink(private val outputs: BitPerfectOutputs) : Aud
     override fun flush() {
         runCatching { transport?.flush() }
         transportStarted = false
+        // A failure recorded against the stream just abandoned must not be
+        // rethrown at this one: a seek during a route glitch would drop to
+        // normal output even though the transport was rebuilt fine.
+        pendingFailure = null
         resetCounters()
     }
 
@@ -316,6 +320,7 @@ internal class BitPerfectAudioSink(private val outputs: BitPerfectOutputs) : Aud
     }
 
     private fun closeTransport() {
+        pendingFailure = null
         val active = transport ?: return
         runCatching { active.release() }
         outputs.release(this)

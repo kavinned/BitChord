@@ -86,6 +86,9 @@ class BluetoothAudioTracker(private val context: Context) {
 
     private var a2dpProfile: BluetoothA2dp? = null
     private var isReceiverRegistered: Boolean = false
+    /** Set by [stop] so a proxy callback that arrives afterwards is released, not kept. */
+    @Volatile
+    private var stopped: Boolean = false
 
     private fun hasBluetoothConnectPermission(): Boolean {
         return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
@@ -101,6 +104,15 @@ class BluetoothAudioTracker(private val context: Context) {
     private val profileListener = object : BluetoothProfile.ServiceListener {
         override fun onServiceConnected(profile: Int, proxy: BluetoothProfile) {
             if (profile == BluetoothProfile.A2DP) {
+                if (stopped) {
+                    // The binder can land after stop() has already looked for a
+                    // proxy and found none; nothing else will ever close this one.
+                    try {
+                        BluetoothAdapter.getDefaultAdapter()?.closeProfileProxy(BluetoothProfile.A2DP, proxy)
+                    } catch (_: Throwable) {
+                    }
+                    return
+                }
                 a2dpProfile = proxy as? BluetoothA2dp
                 refreshCurrentDevice()
             }
@@ -148,6 +160,7 @@ class BluetoothAudioTracker(private val context: Context) {
      * Starts monitoring Bluetooth codec and connection broadcasts.
      */
     fun start() {
+        stopped = false
         if (!isReceiverRegistered) {
             val filter = IntentFilter().apply {
                 addAction(ACTION_CODEC_CONFIG_CHANGED)
@@ -157,7 +170,7 @@ class BluetoothAudioTracker(private val context: Context) {
             }
             try {
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-                    context.registerReceiver(receiver, filter, Context.RECEIVER_EXPORTED)
+                    context.registerReceiver(receiver, filter, Context.RECEIVER_NOT_EXPORTED)
                 } else {
                     context.registerReceiver(receiver, filter)
                 }
@@ -183,6 +196,7 @@ class BluetoothAudioTracker(private val context: Context) {
      * Stops monitoring and releases profile proxies.
      */
     fun stop() {
+        stopped = true
         if (isReceiverRegistered) {
             try {
                 context.unregisterReceiver(receiver)
@@ -461,8 +475,12 @@ class BluetoothAudioTracker(private val context: Context) {
             else -> if (type > 6) "Vendor Codec ($type)" else "Unknown"
         }
 
+        /** A config may name the rate outright instead of setting a bitmask bit. */
+        private val DIRECT_SAMPLE_RATES = setOf(44100, 48000, 88200, 96000, 176400, 192000)
+        private val DIRECT_BIT_DEPTHS = setOf(16, 24, 32)
+
         fun mapSampleRate(mask: Int): Int? = when {
-            mask in setOf(44100, 48000, 88200, 96000, 176400, 192000) -> mask
+            mask in DIRECT_SAMPLE_RATES -> mask
             mask <= 0 || mask > 63 -> null
             (mask and (1 shl 5)) != 0 -> 192000
             (mask and (1 shl 4)) != 0 -> 176400
@@ -474,7 +492,7 @@ class BluetoothAudioTracker(private val context: Context) {
         }
 
         fun mapBitDepth(mask: Int): Int? = when {
-            mask in setOf(16, 24, 32) -> mask
+            mask in DIRECT_BIT_DEPTHS -> mask
             mask <= 0 || mask > 7 -> null
             (mask and (1 shl 2)) != 0 -> 32
             (mask and (1 shl 1)) != 0 -> 24

@@ -589,9 +589,12 @@ internal fun CurrentLyricStrip(
     // strip level.  This lets us override the parent Column's forced
     // CenterHorizontally alignment and flush RTL lines to the right edge.
     val isSynced = remember(lines) { lines.any { it.timeMs > 0L } }
-    var stripRtl by remember { mutableStateOf(false) }
-    var activeText by remember { mutableStateOf("") }
-    if (isSynced) {
+    // Derived during composition rather than stored in two states: writing them
+    // here made every lyric change settle over a second pass, and the value they
+    // fed only ever decided the direction below.
+    val stripText = if (!isSynced) {
+        ""
+    } else {
         val clock = rememberLyricClock(trackKey, playhead, isPlaying)
         val index by remember(lines) {
             derivedStateOf { lines.indexOfLast { it.timeMs <= clock.longValue } }
@@ -602,15 +605,17 @@ internal fun CurrentLyricStrip(
         val intro = instrumental && firstSung >= 0 && index < firstSung
         val introLines = stringArrayResource(Res.array.lyrics_intro_lines)
         val introLine = remember(trackKey) { introLines.random() }
-        activeText = when {
+        when {
             intro -> introLine
             instrumental -> stringResource(Res.string.instrumental)
             else -> current.text
         }
-        stripRtl = isRtl(activeText)
     }
+    val stripRtl = isRtl(stripText)
 
-    val align: Alignment = if (stripRtl) Alignment.CenterStart else Alignment.CenterStart
+    // Both branches were CenterStart: kept explicit rather than as a branch
+    // that reads like a decision and isn't one.
+    val align: Alignment = Alignment.CenterStart
 
     CompositionLocalProvider(LocalLayoutDirection provides if (stripRtl) LayoutDirection.Rtl else LayoutDirection.Ltr) {
         Box(

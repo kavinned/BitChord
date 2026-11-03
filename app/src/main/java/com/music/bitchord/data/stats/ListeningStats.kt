@@ -244,51 +244,68 @@ object ListeningStats {
      * than re-serialising a month every time a track ticks over.
      */
     fun flush() {
-        pending()?.let { (key, snapshot) -> writer.launch { write(key, snapshot) } }
+        if (!ready) return
+        writer.launch { flushOpen() }
     }
 
     /** As [flush], for a caller that is about to read back what it wrote. */
     private suspend fun flushAndAwait() {
-        pending()?.let { (key, snapshot) -> writer.launch { write(key, snapshot) }.join() }
+        if (!ready) return
+        writer.launch { flushOpen() }.join()
     }
 
-    /** The open month as bytes-to-be, or null when nothing has changed. */
-    private fun pending(): Pair<String, StoredBucket>? {
-        if (!ready) return null
-        return synchronized(lock) {
-            if (!dirty) return null
-            val bucket = open ?: return null
-            dirty = false
-            bucket.key to bucket.snapshot()
-        }
+    /**
+     * Encodes the open month and swaps it into place.
+     *
+     * The snapshot and the encode both hold [lock], and both run here rather
+     * than on the caller. [OpenBucket.snapshot] hands back the very
+     * [TrackEntry]s [record] mutates, so encoding one outside the lock
+     * serialised a total while the sampler was already adding to it: the write
+     * landed on one side of the add or the other, and the minutes it missed
+     * were dropped from the file until the next sample happened to include
+     * them. Holding the lock for the encode costs the playback thread a pause
+     * the length of one encode; it costs the disk write nothing, because [write]
+     * is handed a finished string. Taking [writeLock] before the snapshot also
+     * keeps queued flushes in order, so an older snapshot can never land after
+     * a newer one.
+     *
+     * Encoded before [dirty] is cleared, so an encode that throws leaves the
+     * month queued instead of forgetting it.
+     */
+    private suspend fun flushOpen() = writeLock.withLock {
+        val payload = synchronized(lock) { encodedOpenMonth() }
+        if (payload != null) write(payload.first, payload.second)
+    }
+
+    /** The open month as `key to encoded JSON`, or null when nothing has changed. Call under [lock]. */
+    private fun encodedOpenMonth(): Pair<String, String>? {
+        if (!ready || !dirty) return null
+        val bucket = open ?: return null
+        val encoded = runCatching { json.encodeToString(StoredBucket.serializer(), bucket.snapshot()) }
+            .onFailure { Log.w(TAG, "Could not encode listening bucket ${bucket.key}", it) }
+            .getOrNull() ?: return null
+        dirty = false
+        return bucket.key to encoded
     }
 
     /**
      * Serialises a month and swaps it into place.
      *
-     * Never on the caller's thread. The caller is the playback service's
-     * sampler, which runs on the main thread — see its `reportProgress` — so
-     * encoding a month of listening and writing it there was a JSON pass and a
-     * file write on the UI thread every thirty seconds of playback, growing
-     * with the size of the month.
-     *
      * Written aside and renamed, so a kill mid-write leaves the previous
-     * month rather than a truncated one.
+     * month rather than a truncated one. Called under [writeLock].
      */
-    private suspend fun write(key: String, snapshot: StoredBucket) = writeLock.withLock {
-        runCatching {
-            directory.mkdirs()
-            val file = File(directory, "$key.json")
-            val temporary = File(directory, "$key.json.tmp")
-            temporary.writeText(json.encodeToString(StoredBucket.serializer(), snapshot))
-            if (!temporary.renameTo(file)) {
-                // renameTo will not replace on some filesystems; the delete is
-                // the only thing standing between that and a .tmp per flush.
-                if (file.delete() && temporary.renameTo(file)) Unit else temporary.delete()
-            }
-            version++
-        }.onFailure { Log.w(TAG, "Could not write listening bucket $key", it) }
-    }
+    private fun write(key: String, encoded: String) = runCatching {
+        directory.mkdirs()
+        val file = File(directory, "$key.json")
+        val temporary = File(directory, "$key.json.tmp")
+        temporary.writeText(encoded)
+        if (!temporary.renameTo(file)) {
+            // renameTo will not replace on some filesystems; the delete is
+            // the only thing standing between that and a .tmp per flush.
+            if (file.delete() && temporary.renameTo(file)) Unit else temporary.delete()
+        }
+        version++
+    }.onFailure { Log.w(TAG, "Could not write listening bucket $key", it) }
 
     /** The bucket for [month], loading or creating it and retiring the last one. */
     private fun bucketFor(month: YearMonth): OpenBucket {
@@ -297,8 +314,13 @@ object ListeningStats {
         // The month rolled over mid-session. Whatever the last one still held
         // has to reach disk before it is dropped on the floor.
         open?.let { previous ->
+            // Retired here, so nothing mutates it while the writer encodes it.
             val stale = previous.snapshot()
-            writer.launch { write(previous.key, stale) }
+            writer.launch {
+                runCatching { json.encodeToString(StoredBucket.serializer(), stale) }
+                    .onSuccess { encoded -> writeLock.withLock { write(previous.key, encoded) } }
+                    .onFailure { Log.w(TAG, "Could not write listening bucket ${previous.key}", it) }
+            }
         }
         val loaded = read(key) ?: StoredBucket(month = key)
         return OpenBucket.of(key, loaded).also {

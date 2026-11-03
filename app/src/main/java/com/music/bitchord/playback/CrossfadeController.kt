@@ -37,6 +37,7 @@ import com.music.bitchord.playback.smart.planTransition
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
@@ -2386,27 +2387,36 @@ class CrossfadeController(
         )
         loopBuildJob = scope.launch {
             val began = SystemClock.elapsedRealtime()
-            val session = withContext(Dispatchers.Default) {
-                runCatching {
-                    LoopMixSession.build(plan, outItem.mediaId, inItem.mediaId, sampleRate, inLevel) { side, from, to ->
-                        if (side == LoopMix.Side.OUT) {
-                            loopRegion(outItem, durationMs, from, to, sampleRate)
-                        } else {
-                            loopRegion(inItem, nextDurationMs, from, to, sampleRate)
+            var session: LoopMixSession? = null
+            try {
+                // NonCancellable: the build is one blocking decode with no
+                // suspension point in it, so a cancel that lands mid-build
+                // would otherwise throw before the result was assigned and
+                // leak the renderer it opened.
+                withContext(NonCancellable + Dispatchers.Default) {
+                    session = runCatching {
+                        LoopMixSession.build(plan, outItem.mediaId, inItem.mediaId, sampleRate, inLevel) { side, from, to ->
+                            if (side == LoopMix.Side.OUT) {
+                                loopRegion(outItem, durationMs, from, to, sampleRate)
+                            } else {
+                                loopRegion(inItem, nextDurationMs, from, to, sampleRate)
+                            }
                         }
-                    }
-                }.onFailure { Log.w(TAG, "loop build failed", it) }.getOrNull()
-            }
-            if (phase != Phase.LOOP_ARMING || outgoing !== out) {
+                    }.onFailure { Log.w(TAG, "loop build failed", it) }.getOrNull()
+                }
+                if (phase != Phase.LOOP_ARMING || outgoing !== out) return@launch
+                val built = session
+                if (built == null) {
+                    loopFallBack("the decks would not build")
+                    return@launch
+                }
+                Log.d(TAG, "loop decks built in ${SystemClock.elapsedRealtime() - began}ms")
+                armLoop(built, out, into, nextIndex, outPort, inPort)
+                // Armed: the takeover paths own it from here.
+                session = null
+            } finally {
                 session?.close()
-                return@launch
             }
-            if (session == null) {
-                loopFallBack("the decks would not build")
-                return@launch
-            }
-            Log.d(TAG, "loop decks built in ${SystemClock.elapsedRealtime() - began}ms")
-            armLoop(session, out, into, nextIndex, outPort, inPort)
         }
     }
 
@@ -2539,8 +2549,9 @@ class CrossfadeController(
                 // what is heard, and runs for as long as it is: both have to
                 // have played out before the next reading means anything.
                 val port = session.inPort
-                val lead = if (port.processedUs != C.TIME_UNSET && port.positionUs != C.TIME_UNSET) {
-                    ((port.processedUs - port.positionUs).coerceAtLeast(0L)) / 1e6
+                val reading = port.snapshot()
+                val lead = if (port.processedUs != C.TIME_UNSET && reading.us != C.TIME_UNSET) {
+                    ((port.processedUs - reading.us).coerceAtLeast(0L)) / 1e6
                 } else {
                     1.0
                 }
