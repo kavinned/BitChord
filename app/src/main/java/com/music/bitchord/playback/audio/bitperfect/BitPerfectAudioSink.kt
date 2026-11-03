@@ -289,6 +289,9 @@ internal class BitPerfectAudioSink(private val outputs: BitPerfectOutputs) : Aud
         }
         transport = opened
         current = input
+        // The DAC's own rate is known now; the pairs a later track may need are
+        // not work for this thread, so they are built behind it.
+        DacFormatConverter.warmTables(input.sampleRate, BitPerfectPcm.STANDARD_RATES)
         converter = if (opened.sampleRate != input.sampleRate || opened.validBits < input.sourceBits) {
             DacFormatConverter(
                 encoding = input.encoding,
