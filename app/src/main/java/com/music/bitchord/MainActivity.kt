@@ -2463,288 +2463,6 @@ private fun BitChordApp(
 
     // The player's whole parameter list, kept apart from the sheet that
     // mounts it so the sheet's own setup reads on its own.
-    val nowPlaying: @Composable (Song) -> Unit = { song ->
-        val effectiveSong = optimisticVersionSong?.takeIf {
-            it.videoId == convertedAudioId || it.videoId == convertedVideoId || it.videoId == keepVideoId ||
-            it.videoId == YtMusicRepository.cachedAudioVersion(song.videoId)?.videoId ||
-            it.videoId == YtMusicRepository.cachedVideoVersion(song.videoId)?.videoId
-        } ?: song
-        val displayedSong = activeRadioSeed
-            ?.takeIf { (videoId, _) -> effectiveSong.radioName == null && videoId == effectiveSong.videoId }
-            ?.let { (videoId, name) ->
-                effectiveSong.copy(
-                    radioName = name,
-                    playbackSource = name,
-                    playbackSourceType = PlaybackSourceType.SHARED_LINK,
-                    playbackSourceId = videoId,
-                )
-            }
-            ?: effectiveSong
-        val playedBy = partyState
-            .takeIf {
-                it.inParty && it.playback.track?.videoId == displayedSong.videoId
-            }
-            ?.playback
-            ?.let { playback ->
-                playback.startedByName?.takeIf(String::isNotBlank)
-                    ?: partyState.members.firstOrNull {
-                        it.memberId == playback.startedBy
-                    }?.displayName?.takeIf(String::isNotBlank)
-            }
-        NowPlayingScreen(
-            song = displayedSong,
-            playedBy = playedBy,
-            accountName = account?.name,
-            windowWidth = windowWidth,
-            windowHeight = windowHeight,
-            // A canvas under the ⋯ menu holds still. Asked, not passed — see
-            // the parameter.
-            menuOpen = { songActions != null && menuFromPlayer && songMenuOrigin == null },
-            onLiveCanvasChanged = { playerLiveCanvas = it },
-            isPlaying = player.isPlaying,
-            isLoading = playPauseBusy,
-            position = player.position,
-            durationMs = player.durationMs,
-            audioVersionSwitching = switchingAudioVersion,
-            qualityUpgraded = player.isQualityUpgraded,
-            onPlayPause = {
-                togglePlayPause()
-            },
-            onNext = { controller?.seekToNextMediaItem() },
-            onPrevious = { controller?.seekToPrevious() },
-            onBlockedControl = showHostOnlyNotice,
-            onSeekFraction = { fraction ->
-                controller?.let { player ->
-                    // Read at the moment of the seek, not from the
-                    // polled snapshot the screen draws with: a track
-                    // change updates the current item before it updates
-                    // the duration, so a fraction dropped seconds after
-                    // a transition would otherwise be scaled by the
-                    // previous song's length.
-                    val duration = player.duration
-                    if (duration > 0) {
-                        player.seekTo(
-                            (fraction * duration).toLong()
-                                .coerceIn(0L, (duration - SEEK_END_GUARD_MS).coerceAtLeast(0L)),
-                        )
-                    }
-                }
-            },
-            onSeek = { target ->
-                controller?.let { player ->
-                    // Clamped here rather than at each caller because
-                    // not every caller can clamp. The scrubber's target
-                    // is a fraction of the duration and cannot overrun,
-                    // but a tapped lyric line seeks to a timestamp from
-                    // whichever transcription matched on title, artist
-                    // and duration — and a match against a slightly
-                    // longer master puts every line late, so a tap near
-                    // the end asks for a position past the end of this
-                    // stream. Media3 answers that by clamping to the
-                    // final millisecond, which ends the track and starts
-                    // the next one: tapping the last line of a song
-                    // skipped it.
-                    val duration = player.duration
-                    player.seekTo(
-                        if (duration > 0) {
-                            target.coerceIn(0L, (duration - SEEK_END_GUARD_MS).coerceAtLeast(0L))
-                        } else {
-                            target.coerceAtLeast(0L)
-                        },
-                    )
-                }
-            },
-            queue = player.queue,
-            queueIndex = player.queueIndex,
-            hasPrevious = player.hasPrevious,
-            hasNext = player.hasNext,
-            repeatMode = player.repeatMode,
-            shuffleEnabled = shuffleEnabled,
-            autoplayEnabled = autoplayEnabled,
-            signedIn = signedIn,
-            likeStatus = likeStatusOf(song),
-            onToggleLike = { toggleLikeOf(song) },
-            // The service owns both the queue and the Shuffle state. Keeping
-            // the toggle on that side prevents the UI from changing the icon
-            // before its asynchronous reorder command has actually landed.
-            onToggleShuffle = { controller?.toggleShuffle() },
-            onCycleRepeat = {
-                controller?.let {
-                    val next = when (it.repeatMode) {
-                        Player.REPEAT_MODE_OFF -> Player.REPEAT_MODE_ALL
-                        Player.REPEAT_MODE_ALL -> Player.REPEAT_MODE_ONE
-                        else -> Player.REPEAT_MODE_OFF
-                    }
-                    // Persist the new repeat mode so it survives app restarts.
-                    AppSettings.setRepeatMode(next)
-                    // Nothing else to do here: PlaybackService watches the
-                    // repeat mode itself and takes AutoPlay's tracks out of
-                    // the queue for the duration of repeat-all — and, unlike
-                    // this screen, is still around to put them back when the
-                    // loop ends.
-                    it.repeatMode = next
-                }
-            },
-            onToggleAutoplay = {
-                // PlaybackService owns the setting and queue extension so
-                // this path and the notification use exactly one loader.
-                controller?.toggleAutoplay()
-            },
-            onJumpTo = { index ->
-                controller?.let { c ->
-                    // The session applies the jump plan to its own player (see
-                    // its seekTo override); editing the queue from here would
-                    // round-trip every item through the controller and lose
-                    // their bounded-window metadata.
-                    c.seekTo(index, 0L)
-                    c.play()
-                }
-            },
-            onRemoveFromQueue = { controller?.removeMediaItem(it) },
-            onMoveInQueue = { from, to -> controller?.moveMediaItem(from, to) },
-            onQueueDragActiveChange = { active -> controller?.setQueueDragActive(active) },
-            // The enriched copy, not player.song — otherwise the menu
-            // hides the album and artist rows even once their browse
-            // ids have been resolved.
-            onOpenMenu = {
-                menuFromPlayer = true
-                songMenuOrigin = null
-                songMenuAnchor = MenuAnchor.consume()
-                songActions = song
-                // Taken on the frame the menu opens on, which is long anyway,
-                // rather than on one of its spring's.
-                if (!AppSettings.reduceDynamicBlur.value && !playerLiveCanvas) playerBackdrop.capture()
-            },
-            // Pushed over whatever page is under the player, so back from it
-            // returns there.
-            onOpenAlbum = { id ->
-                dismissPlayer()
-                viewModel.openDetail(
-                    id,
-                    song.albumName ?: song.title,
-                    song.artist,
-                    song.thumbnailUrl,
-                    BrowseType.ALBUM,
-                )
-            },
-            // A credit with a channel id opens that channel straight away.
-            // YouTube does not give one to every credited artist - on a two-artist
-            // track it linked only the first, and neither the byline nor the
-            // album header had the second - so the rest go by name, through a
-            // lookup that opens a page only when the answer is that name
-            // exactly. Otherwise nothing opens, which beats opening a stranger.
-            //
-            // No artwork: this track's cover isn't the artist's
-            // picture, and the page fills its own in once loaded.
-            onOpenArtist = { id, name ->
-                dismissPlayer()
-                if (id != null) {
-                    viewModel.openDetail(
-                        id,
-                        name,
-                        context.getString(R.string.artist),
-                        null,
-                        BrowseType.ARTIST,
-                    )
-                } else {
-                    scope.launch {
-                        val found = YtMusicRepository.findArtistPageId(name).getOrNull()
-                        if (found != null) {
-                            viewModel.openDetail(
-                                found,
-                                name,
-                                context.getString(R.string.artist),
-                                null,
-                                BrowseType.ARTIST,
-                            )
-                        } else {
-                            Toast.makeText(
-                                context,
-                                context.getString(R.string.couldnt_find, name),
-                                Toast.LENGTH_SHORT,
-                            ).show()
-                        }
-                    }
-                }
-            },
-            onOpenPlaybackSource = openSource@{
-                val sourceType = displayedSong.playbackSourceType ?: PlaybackSourceType.QUEUE
-                val sourceTitle = displayedSong.playbackSource
-                    ?: displayedSong.albumName
-                    ?: queueLabel
-                val sourceId = displayedSong.playbackSourceId
-
-                // A context link is navigation, not another page stacked over
-                // Now Playing. The branches that navigate clear the current
-                // route before restoring it; a shared link opens in the browser
-                // and leaves what the user was reading where it was.
-                dismissPlayer()
-
-                when (sourceType) {
-                    PlaybackSourceType.BROWSE -> {
-                        val id = sourceId ?: return@openSource
-                        navigator.clear()
-                        viewModel.closeMoodGenre()
-                        viewModel.openDetail(id, sourceTitle)
-                    }
-                    PlaybackSourceType.HOME -> {
-                        navigator.clear()
-                        viewModel.closeMoodGenre()
-                        selectedTab = TAB_HOME
-                    }
-                    PlaybackSourceType.SEARCH -> {
-                        navigator.clear()
-                        viewModel.closeMoodGenre()
-                        selectedTab = TAB_SEARCH
-                    }
-                    PlaybackSourceType.HISTORY -> {
-                        navigator.clear()
-                        navigator.push(AppRoute.History)
-                        viewModel.loadHistory()
-                    }
-                    PlaybackSourceType.REPLAY -> {
-                        navigator.clear()
-                        replayLandingPage = ReplayStoryPage.INTRO
-                        navigator.push(AppRoute.Replay)
-                    }
-                    PlaybackSourceType.EXPLORE -> {
-                        navigator.clear()
-                        selectedTab = TAB_EXPLORE
-                    }
-                    PlaybackSourceType.SHARED_LINK -> {
-                        val id = sourceId ?: return@openSource
-                        context.startActivity(
-                            Intent(
-                                Intent.ACTION_VIEW,
-                                Uri.parse("https://music.youtube.com/watch?v=$id"),
-                            ),
-                        )
-                    }
-                    // Handled inside NowPlayingScreen by opening its queue.
-                    PlaybackSourceType.QUEUE -> Unit
-                }
-            },
-            lyrics = lyrics,
-            lyricsSource = lyricsSource,
-            lyricsProviderStates = lyricsProviderStates,
-            onSelectLyricsProvider = viewModel::selectLyricsProvider,
-            lyricsUnavailable = lyricsChecked && lyrics.isNullOrEmpty(),
-            lyricsOffsetOpen = showLyricsOffset,
-            onDismissLyricsOffset = { showLyricsOffset = false },
-            onListenTogether = {
-                // The player is a sheet over the page, so it has to come down
-                // for the page to be read at all.
-                dismissPlayer()
-                navigator.pushAll(AppRoute.Settings, AppRoute.ListenTogether)
-            },
-            onClearQueue = {
-                // Keep what's playing and context/autoplay; drop user-queued tracks.
-                controller?.let { c ->
-                    QueueCoordinator.clearUserQueue(c)
-                }
-            },
-        )
-    }
 
     // One step back, from anywhere: the page on top of the stack, then a mood
     // or genre opened inside Explore, then any tab but Home back to Home. Only
@@ -4780,7 +4498,292 @@ private fun BitChordApp(
                         },
                     ) {
                         CompositionLocalProvider(LocalPlayerDock provides activeDock) {
-                            nowPlaying(playerSong)
+                            // The player's arguments were a lambda held at the top of the app, and a
+                            // lambda is compared by identity: any value it closed over that changed —
+                            // a position tick included — made a new lambda and restarted the player
+                            // rather than letting it skip. Written out here, each value is an argument
+                            // Compose can compare on its own.
+                            val song = playerSong
+                            val effectiveSong = optimisticVersionSong?.takeIf {
+                                it.videoId == convertedAudioId || it.videoId == convertedVideoId || it.videoId == keepVideoId ||
+                                it.videoId == YtMusicRepository.cachedAudioVersion(song.videoId)?.videoId ||
+                                it.videoId == YtMusicRepository.cachedVideoVersion(song.videoId)?.videoId
+                            } ?: song
+                            val displayedSong = activeRadioSeed
+                                ?.takeIf { (videoId, _) -> effectiveSong.radioName == null && videoId == effectiveSong.videoId }
+                                ?.let { (videoId, name) ->
+                                    effectiveSong.copy(
+                                        radioName = name,
+                                        playbackSource = name,
+                                        playbackSourceType = PlaybackSourceType.SHARED_LINK,
+                                        playbackSourceId = videoId,
+                                    )
+                                }
+                                ?: effectiveSong
+                            val playedBy = partyState
+                                .takeIf {
+                                    it.inParty && it.playback.track?.videoId == displayedSong.videoId
+                                }
+                                ?.playback
+                                ?.let { playback ->
+                                    playback.startedByName?.takeIf(String::isNotBlank)
+                                        ?: partyState.members.firstOrNull {
+                                            it.memberId == playback.startedBy
+                                        }?.displayName?.takeIf(String::isNotBlank)
+                                }
+                            NowPlayingScreen(
+                                song = displayedSong,
+                                playedBy = playedBy,
+                                accountName = account?.name,
+                                windowWidth = windowWidth,
+                                windowHeight = windowHeight,
+                                // A canvas under the ⋯ menu holds still. Asked, not passed — see
+                                // the parameter.
+                                menuOpen = { songActions != null && menuFromPlayer && songMenuOrigin == null },
+                                onLiveCanvasChanged = { playerLiveCanvas = it },
+                                isPlaying = player.isPlaying,
+                                isLoading = playPauseBusy,
+                                position = player.position,
+                                durationMs = player.durationMs,
+                                audioVersionSwitching = switchingAudioVersion,
+                                qualityUpgraded = player.isQualityUpgraded,
+                                onPlayPause = {
+                                    togglePlayPause()
+                                },
+                                onNext = { controller?.seekToNextMediaItem() },
+                                onPrevious = { controller?.seekToPrevious() },
+                                onBlockedControl = showHostOnlyNotice,
+                                onSeekFraction = { fraction ->
+                                    controller?.let { player ->
+                                        // Read at the moment of the seek, not from the
+                                        // polled snapshot the screen draws with: a track
+                                        // change updates the current item before it updates
+                                        // the duration, so a fraction dropped seconds after
+                                        // a transition would otherwise be scaled by the
+                                        // previous song's length.
+                                        val duration = player.duration
+                                        if (duration > 0) {
+                                            player.seekTo(
+                                                (fraction * duration).toLong()
+                                                    .coerceIn(0L, (duration - SEEK_END_GUARD_MS).coerceAtLeast(0L)),
+                                            )
+                                        }
+                                    }
+                                },
+                                onSeek = { target ->
+                                    controller?.let { player ->
+                                        // Clamped here rather than at each caller because
+                                        // not every caller can clamp. The scrubber's target
+                                        // is a fraction of the duration and cannot overrun,
+                                        // but a tapped lyric line seeks to a timestamp from
+                                        // whichever transcription matched on title, artist
+                                        // and duration — and a match against a slightly
+                                        // longer master puts every line late, so a tap near
+                                        // the end asks for a position past the end of this
+                                        // stream. Media3 answers that by clamping to the
+                                        // final millisecond, which ends the track and starts
+                                        // the next one: tapping the last line of a song
+                                        // skipped it.
+                                        val duration = player.duration
+                                        player.seekTo(
+                                            if (duration > 0) {
+                                                target.coerceIn(0L, (duration - SEEK_END_GUARD_MS).coerceAtLeast(0L))
+                                            } else {
+                                                target.coerceAtLeast(0L)
+                                            },
+                                        )
+                                    }
+                                },
+                                queue = player.queue,
+                                queueIndex = player.queueIndex,
+                                hasPrevious = player.hasPrevious,
+                                hasNext = player.hasNext,
+                                repeatMode = player.repeatMode,
+                                shuffleEnabled = shuffleEnabled,
+                                autoplayEnabled = autoplayEnabled,
+                                signedIn = signedIn,
+                                likeStatus = likeStatusOf(song),
+                                onToggleLike = { toggleLikeOf(song) },
+                                // The service owns both the queue and the Shuffle state. Keeping
+                                // the toggle on that side prevents the UI from changing the icon
+                                // before its asynchronous reorder command has actually landed.
+                                onToggleShuffle = { controller?.toggleShuffle() },
+                                onCycleRepeat = {
+                                    controller?.let {
+                                        val next = when (it.repeatMode) {
+                                            Player.REPEAT_MODE_OFF -> Player.REPEAT_MODE_ALL
+                                            Player.REPEAT_MODE_ALL -> Player.REPEAT_MODE_ONE
+                                            else -> Player.REPEAT_MODE_OFF
+                                        }
+                                        // Persist the new repeat mode so it survives app restarts.
+                                        AppSettings.setRepeatMode(next)
+                                        // Nothing else to do here: PlaybackService watches the
+                                        // repeat mode itself and takes AutoPlay's tracks out of
+                                        // the queue for the duration of repeat-all — and, unlike
+                                        // this screen, is still around to put them back when the
+                                        // loop ends.
+                                        it.repeatMode = next
+                                    }
+                                },
+                                onToggleAutoplay = {
+                                    // PlaybackService owns the setting and queue extension so
+                                    // this path and the notification use exactly one loader.
+                                    controller?.toggleAutoplay()
+                                },
+                                onJumpTo = { index ->
+                                    controller?.let { c ->
+                                        // The session applies the jump plan to its own player (see
+                                        // its seekTo override); editing the queue from here would
+                                        // round-trip every item through the controller and lose
+                                        // their bounded-window metadata.
+                                        c.seekTo(index, 0L)
+                                        c.play()
+                                    }
+                                },
+                                onRemoveFromQueue = { controller?.removeMediaItem(it) },
+                                onMoveInQueue = { from, to -> controller?.moveMediaItem(from, to) },
+                                onQueueDragActiveChange = { active -> controller?.setQueueDragActive(active) },
+                                // The enriched copy, not player.song — otherwise the menu
+                                // hides the album and artist rows even once their browse
+                                // ids have been resolved.
+                                onOpenMenu = {
+                                    menuFromPlayer = true
+                                    songMenuOrigin = null
+                                    songMenuAnchor = MenuAnchor.consume()
+                                    songActions = song
+                                    // Taken on the frame the menu opens on, which is long anyway,
+                                    // rather than on one of its spring's.
+                                    if (!AppSettings.reduceDynamicBlur.value && !playerLiveCanvas) playerBackdrop.capture()
+                                },
+                                // Pushed over whatever page is under the player, so back from it
+                                // returns there.
+                                onOpenAlbum = { id ->
+                                    dismissPlayer()
+                                    viewModel.openDetail(
+                                        id,
+                                        song.albumName ?: song.title,
+                                        song.artist,
+                                        song.thumbnailUrl,
+                                        BrowseType.ALBUM,
+                                    )
+                                },
+                                // A credit with a channel id opens that channel straight away.
+                                // YouTube does not give one to every credited artist - on a two-artist
+                                // track it linked only the first, and neither the byline nor the
+                                // album header had the second - so the rest go by name, through a
+                                // lookup that opens a page only when the answer is that name
+                                // exactly. Otherwise nothing opens, which beats opening a stranger.
+                                //
+                                // No artwork: this track's cover isn't the artist's
+                                // picture, and the page fills its own in once loaded.
+                                onOpenArtist = { id, name ->
+                                    dismissPlayer()
+                                    if (id != null) {
+                                        viewModel.openDetail(
+                                            id,
+                                            name,
+                                            context.getString(R.string.artist),
+                                            null,
+                                            BrowseType.ARTIST,
+                                        )
+                                    } else {
+                                        scope.launch {
+                                            val found = YtMusicRepository.findArtistPageId(name).getOrNull()
+                                            if (found != null) {
+                                                viewModel.openDetail(
+                                                    found,
+                                                    name,
+                                                    context.getString(R.string.artist),
+                                                    null,
+                                                    BrowseType.ARTIST,
+                                                )
+                                            } else {
+                                                Toast.makeText(
+                                                    context,
+                                                    context.getString(R.string.couldnt_find, name),
+                                                    Toast.LENGTH_SHORT,
+                                                ).show()
+                                            }
+                                        }
+                                    }
+                                },
+                                onOpenPlaybackSource = openSource@{
+                                    val sourceType = displayedSong.playbackSourceType ?: PlaybackSourceType.QUEUE
+                                    val sourceTitle = displayedSong.playbackSource
+                                        ?: displayedSong.albumName
+                                        ?: queueLabel
+                                    val sourceId = displayedSong.playbackSourceId
+
+                                    // A context link is navigation, not another page stacked over
+                                    // Now Playing. The branches that navigate clear the current
+                                    // route before restoring it; a shared link opens in the browser
+                                    // and leaves what the user was reading where it was.
+                                    dismissPlayer()
+
+                                    when (sourceType) {
+                                        PlaybackSourceType.BROWSE -> {
+                                            val id = sourceId ?: return@openSource
+                                            navigator.clear()
+                                            viewModel.closeMoodGenre()
+                                            viewModel.openDetail(id, sourceTitle)
+                                        }
+                                        PlaybackSourceType.HOME -> {
+                                            navigator.clear()
+                                            viewModel.closeMoodGenre()
+                                            selectedTab = TAB_HOME
+                                        }
+                                        PlaybackSourceType.SEARCH -> {
+                                            navigator.clear()
+                                            viewModel.closeMoodGenre()
+                                            selectedTab = TAB_SEARCH
+                                        }
+                                        PlaybackSourceType.HISTORY -> {
+                                            navigator.clear()
+                                            navigator.push(AppRoute.History)
+                                            viewModel.loadHistory()
+                                        }
+                                        PlaybackSourceType.REPLAY -> {
+                                            navigator.clear()
+                                            replayLandingPage = ReplayStoryPage.INTRO
+                                            navigator.push(AppRoute.Replay)
+                                        }
+                                        PlaybackSourceType.EXPLORE -> {
+                                            navigator.clear()
+                                            selectedTab = TAB_EXPLORE
+                                        }
+                                        PlaybackSourceType.SHARED_LINK -> {
+                                            val id = sourceId ?: return@openSource
+                                            context.startActivity(
+                                                Intent(
+                                                    Intent.ACTION_VIEW,
+                                                    Uri.parse("https://music.youtube.com/watch?v=$id"),
+                                                ),
+                                            )
+                                        }
+                                        // Handled inside NowPlayingScreen by opening its queue.
+                                        PlaybackSourceType.QUEUE -> Unit
+                                    }
+                                },
+                                lyrics = lyrics,
+                                lyricsSource = lyricsSource,
+                                lyricsProviderStates = lyricsProviderStates,
+                                onSelectLyricsProvider = viewModel::selectLyricsProvider,
+                                lyricsUnavailable = lyricsChecked && lyrics.isNullOrEmpty(),
+                                lyricsOffsetOpen = showLyricsOffset,
+                                onDismissLyricsOffset = { showLyricsOffset = false },
+                                onListenTogether = {
+                                    // The player is a sheet over the page, so it has to come down
+                                    // for the page to be read at all.
+                                    dismissPlayer()
+                                    navigator.pushAll(AppRoute.Settings, AppRoute.ListenTogether)
+                                },
+                                onClearQueue = {
+                                    // Keep what's playing and context/autoplay; drop user-queued tracks.
+                                    controller?.let { c ->
+                                        QueueCoordinator.clearUserQueue(c)
+                                    }
+                                },
+                            )
                         }
                     }
                     IosMenuPopover(
