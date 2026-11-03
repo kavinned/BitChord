@@ -14,7 +14,6 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.Immutable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -29,7 +28,6 @@ import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.drawscope.translate
 import androidx.compose.ui.graphics.toArgb
 import coil3.compose.LocalPlatformContext
-import com.music.bitchord.ui.components.nextMotionTickDelayMs
 import com.music.bitchord.ui.graphics.FADE_CURVE_STOPS
 import com.music.bitchord.ui.graphics.forPixelAccess
 import com.music.bitchord.ui.graphics.paletteSwatches
@@ -163,28 +161,6 @@ fun MeshGradientBackground(
         }
     }
 
-    // What the draw reads, republished on a slower tick than the animation
-    // produces. The Animatable still runs every vsync — that is where the drift's
-    // easing and its settle come from — but drawing each of its values costs a
-    // frame of this canvas, and of every glass surface sampling the page under it.
-    // Home leaves several of these running at once, which is most of what the app
-    // spends while it is idle on that screen.
-    val shown = remember { mutableFloatStateOf(0f) }
-    // Same treatment for the colours, and it is the larger share: Home steps its
-    // palette every 3.6s with a 1.4s crossfade, so a static mesh still redrew the
-    // page at display rate for two fifths of its life to fade a colour nobody can
-    // see arriving. Forty-two steps of a fade that slow reads as the fade.
-    val shownColors = remember { mutableStateOf(tuned) }
-    val shownBase = remember { mutableStateOf(tuned.first().dimmed()) }
-    LaunchedEffect(Unit) {
-        while (true) {
-            shown.floatValue = phase.value
-            shownColors.value = animatedColors.map { it.value }
-            shownBase.value = baseColor.value
-            delay(nextMotionTickDelayMs())
-        }
-    }
-
     // Scale up slightly so the blur's clamped edges never show, then blur the
     // whole layer (RenderEffect, API 31+; a no-op below — the radial falloff
     // already reads soft there).
@@ -217,9 +193,8 @@ fun MeshGradientBackground(
         // The base wash used to be `.background(baseColor)` on the modifier,
         // which read the animation in composition. It is the same rectangle,
         // drawn one phase later.
-        drawRect(color = shownBase.value)
-        val drift = shown.floatValue
-        val blobs = shownColors.value
+        drawRect(color = baseColor.value)
+        val drift = phase.value
 
         animatedColors.forEachIndexed { index, _ ->
             val anchor = MESH_ANCHORS[index]
@@ -233,7 +208,7 @@ fun MeshGradientBackground(
             // carrying one would leave every blob where it was first drawn.
             translate(center.x, center.y) {
                 drawCircle(
-                    brush = brushCache[index].of(blobs[index], radius),
+                    brush = brushCache[index].of(animatedColors[index].value, radius),
                     radius = radius,
                     center = Offset.Zero,
                 )
