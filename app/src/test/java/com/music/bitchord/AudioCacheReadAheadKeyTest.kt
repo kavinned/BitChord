@@ -42,6 +42,21 @@ class AudioCacheReadAheadKeyTest {
     }
 
     @Test
+    fun `a prefetched addon uses separate entry from cached youtube copy`() {
+        val youtube = AudioCache.videoCacheKey("abc", rendition = null, substituting = true, atmosSuffix = "")
+        val addon = AudioCache.cacheKeyFor(
+            videoId = "abc",
+            rendition = null,
+            substituting = true,
+            atmosSuffix = "",
+            sourceId = "nebula",
+        )
+
+        assertEquals("abc#alt", youtube)
+        assertEquals("abc#alt:nebula", addon)
+    }
+
+    @Test
     fun `a source key keeps the atmos split`() {
         assertEquals(
             "abc#alt:nebula-noatmos",

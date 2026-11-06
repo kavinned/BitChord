@@ -1383,15 +1383,13 @@ object AudioCache {
      * calls the resolver for bytes it already holds. So the Opus played
      * instead, and nothing said so: until something pins YouTube, Direct Source
      * Stream also holds the second look off (see
-     * [QualityUpgrade.couldStillUpgrade]), so there was no badge and no upgrade,
-     * and only clearing the song from the cache brought the addon's copy back.
+     * [QualityUpgrade.couldStillUpgrade]), so there was no badge and no upgrade.
      *
      * Asked here, before the cache is read, and once per track: an addon
-     * answer is pinned in [StreamChoice] and the Opus dropped, so the open that
-     * follows misses and resolves to that pin. No answer pins YouTube instead
-     * — what the direct resolve falls back to anyway — so the entry is
-     * finished by the stream that started it, and the addon's late answer swaps
-     * in under it. Either pin ends this check for every later open of the track.
+     * answer is pinned in [StreamChoice], so the open that follows uses its
+     * source-specific cache entry while leaving YouTube's cached copy intact.
+     * No answer pins YouTube instead — what the direct resolve falls back to
+     * anyway. Either pin ends this check for every later open of the track.
      *
      * Runs on the loader thread, which the resolver blocks in exactly the same
      * way on a direct-mode miss.
@@ -1423,14 +1421,8 @@ object AudioCache {
                 // Read-ahead may have settled it while this waited.
                 if (StreamChoice.of(videoId) != null) return@runBlocking
                 if (addon != null) {
-                    dropYouTubeEntry(key, videoId)
-                    // Pinned only once the Opus is really gone. Otherwise the
-                    // addon's file would continue it, and YouTube finishing its
-                    // own entry is the lesser loss.
-                    if (!heldByYouTube(key)) {
-                        StreamChoice.remember(videoId, addon, substituted = true)
-                        return@runBlocking
-                    }
+                    StreamChoice.remember(videoId, addon, substituted = true)
+                    return@runBlocking
                 }
                 runCatching { StreamResolver.resolve(videoId) }
                     .onFailure { if (it is kotlinx.coroutines.CancellationException) throw it }
@@ -1448,13 +1440,6 @@ object AudioCache {
             // A released media period interrupts its loader; that is a skip.
             throw java.io.InterruptedIOException("direct lookup for $videoId interrupted")
         }
-    }
-
-    /** Clears [key]'s YouTube bytes so an addon's file can fill it from the top. */
-    private fun dropYouTubeEntry(key: String, videoId: String) {
-        runCatching { cache.removeResource(key) }
-            .onSuccess { TrackLog.d(TAG, "dropped cached YouTube copy $key for the addon's", about = videoId) }
-            .onFailure { TrackLog.d(TAG, "cache entry $key still in use: ${it.message}", about = videoId) }
     }
 
     private fun cacheFactory(upstream: DataSource.Factory) = CacheDataSource.Factory()
@@ -1591,12 +1576,7 @@ object AudioCache {
                 // leaves nothing pinned, and this falls through to the same
                 // URL-only warm-up it did before — YouTube resolves the track at
                 // playback time as usual.
-                // Not over an entry YouTube's own bytes already fill, from an
-                // earlier play: the player reads that head straight off disk,
-                // and the pin would then stream the substitute after it. That
-                // track's way up is the second look — see [heldByYouTube].
-                val youTubeFilled = heldByYouTube(cacheKeyOf(Uri.parse("bitchord://watch?v=$next")))
-                val warmed = if (substitutable && target != null && !pinnedToYouTube && !youTubeFilled) {
+                val warmed = if (shouldPrefetchSubstitute(substitutable, target != null, pinnedToYouTube) && target != null) {
                     // Sources that already refused this track are left out. A
                     // refusal is minutes old at most and the lookup behind it is
                     // deterministic, so pinning the same source again only
@@ -1648,6 +1628,13 @@ object AudioCache {
         }
     }
 
+    /** Cache contents do not decide whether an eligible substitute is looked up. */
+    internal fun shouldPrefetchSubstitute(
+        substitutable: Boolean,
+        hasTarget: Boolean,
+        pinnedToYouTube: Boolean,
+    ): Boolean = substitutable && hasTarget && !pinnedToYouTube
+
     private var directJob: Job? = null
 
     /**
@@ -1691,14 +1678,8 @@ object AudioCache {
                     .getOrNull()
                     ?: return@launch
                 if (StreamChoice.of(id) == null) {
-                    // An addon pinned over YouTube's Opus from an earlier play
-                    // would have its head read straight off that Opus and its
-                    // rest streamed after it — see [settleDirectEntry]. The
-                    // Opus goes first, or the addon is not pinned at all and
-                    // playback's own open settles it.
-                    val key = cacheKeyOf(Uri.parse("bitchord://watch?v=$id"))
-                    if (addon != null && heldByYouTube(key)) dropYouTubeEntry(key, id)
-                    if (addon != null && heldByYouTube(key)) return@launch
+                    // The pin selects a source-specific entry, so any cached
+                    // YouTube copy remains available without sharing bytes.
                     StreamChoice.remember(id, stream, substituted = addon != null)
                     if (addon == null) DirectSourceGate.startedOnYouTube(id, upcoming.target)
                 }

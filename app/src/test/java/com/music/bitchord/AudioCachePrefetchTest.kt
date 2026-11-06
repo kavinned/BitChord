@@ -3,6 +3,7 @@ package com.music.bitchord
 import com.music.bitchord.data.settings.AppSettings
 import com.music.bitchord.data.sources.SourceKind
 import com.music.bitchord.data.sources.SourceResolver
+import com.music.bitchord.playback.AudioCache
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -35,5 +36,17 @@ class AudioCachePrefetchTest {
         } finally {
             setting.value = original
         }
+    }
+
+    @Test
+    fun `cached youtube copy does not block eligible addon prefetch`() {
+        assertTrue(AudioCache.shouldPrefetchSubstitute(substitutable = true, hasTarget = true, pinnedToYouTube = false))
+    }
+
+    @Test
+    fun `substitute prefetch still needs target and no youtube pin`() {
+        assertFalse(AudioCache.shouldPrefetchSubstitute(substitutable = true, hasTarget = false, pinnedToYouTube = false))
+        assertFalse(AudioCache.shouldPrefetchSubstitute(substitutable = true, hasTarget = true, pinnedToYouTube = true))
+        assertFalse(AudioCache.shouldPrefetchSubstitute(substitutable = false, hasTarget = true, pinnedToYouTube = false))
     }
 }
