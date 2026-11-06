@@ -1068,6 +1068,9 @@ private fun BitChordApp(
         queueNoticeId += 1
         queueNotice = QueueActionNotice(queueNoticeId, message)
     }
+    val dismissQueueNotice: (Int) -> Unit = { id ->
+        if (queueNotice?.id == id) queueNotice = null
+    }
     LaunchedEffect(queueNotice?.id) {
         val shown = queueNotice ?: return@LaunchedEffect
         delay(3_000)
@@ -3882,7 +3885,7 @@ private fun BitChordApp(
                         .fillMaxWidth()
                         .onSizeChanged { floatingBarsHeight.intValue = it.height },
                 ) {
-                    QueueActionNoticeHost(queueNotice)
+                    QueueActionNoticeHost(queueNotice.takeUnless { showNowPlaying }, hazeState, dismissQueueNotice)
                     // Liquid glass replaces the two stacked bars with the single
                     // component they are stacked to imitate: the now playing
                     // controls dock into the tab bar rather than riding above it,
@@ -3925,7 +3928,7 @@ private fun BitChordApp(
                         .onSizeChanged { floatingBarsHeight.intValue = it.height },
                     horizontalAlignment = Alignment.CenterHorizontally,
                 ) {
-                    QueueActionNoticeHost(queueNotice)
+                    QueueActionNoticeHost(queueNotice.takeUnless { showNowPlaying }, hazeState, dismissQueueNotice)
                     player.song?.let { song ->
                         MiniPlayer(
                             song = song,
@@ -4356,6 +4359,7 @@ private fun BitChordApp(
         }
         // ---- Now Playing ----
         if (playerRaised) {
+            val playerNoticeHazeState = remember { HazeState() }
             // What rememberModalBottomSheetState builds, but able to start open,
             // and with every hide routed through [playerSheetMotion] — a drag
             // released low, a back press, a tap on the scrim. Refused here and
@@ -4495,7 +4499,9 @@ private fun BitChordApp(
                             reduceDynamicBlur -> Modifier
                             playerLiveCanvas -> Modifier.layerBackdrop(livePlayerBackdrop)
                             else -> Modifier.snapshotBackdropSource(playerBackdrop)
-                        },
+                        }.then(
+                            if (reduceDynamicBlur) Modifier else Modifier.hazeSource(playerNoticeHazeState),
+                        ),
                     ) {
                         CompositionLocalProvider(LocalPlayerDock provides activeDock) {
                             // The player's arguments were a lambda held at the top of the app, and a
@@ -4786,6 +4792,17 @@ private fun BitChordApp(
                             )
                         }
                     }
+                    QueueActionNoticeHost(
+                        notice = queueNotice,
+                        hazeState = playerNoticeHazeState,
+                        onDismiss = dismissQueueNotice,
+                        modifier = Modifier
+                            .align(Alignment.BottomCenter)
+                            .widthIn(max = FLOATING_BAR_MAX_WIDTH)
+                            .fillMaxWidth()
+                            .navigationBarsPadding()
+                            .padding(bottom = 96.dp),
+                    )
                     IosMenuPopover(
                         item = songActions?.takeIf { songMenuOrigin == null && menuFromPlayer },
                         anchor = songMenuAnchor,
