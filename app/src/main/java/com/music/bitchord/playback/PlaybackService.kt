@@ -6592,7 +6592,8 @@ class PlaybackService : MediaLibraryService() {
         NerdStats.publishNextPrefetch(NerdStats.NextPrefetch(
             mediaId = mediaId,
             title = song.title,
-            sourceName = pin?.sourceConfigId?.let { SourceRegistry.config(it)?.displayName },
+            sourceName = pin?.sourceConfigId?.let { SourceRegistry.config(it)?.displayName }
+                ?: if (pin != null && StreamChoice.isYouTube(mediaId)) SourceKind.YOUTUBE.label else null,
             format = pin?.format?.takeIf { it != StreamFormat() }?.summary,
             cachedBytes = cachedBytes,
             totalBytes = totalBytes,
