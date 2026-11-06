@@ -15,6 +15,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -51,6 +52,7 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import coil3.compose.AsyncImage
@@ -96,6 +98,7 @@ fun ReplayScreen(
     /** The signed-in account name embossed on the Replay cards. */
     holder: String,
     onPeriodChange: (ReplayPeriod) -> Unit,
+    onOpenDatePicker: () -> Unit,
     onOpenStory: (ReplayStoryPage) -> Unit,
     onPlaySong: (Song) -> Unit,
     /**
@@ -113,6 +116,7 @@ fun ReplayScreen(
     landingPage: ReplayStoryPage = ReplayStoryPage.INTRO,
 ) {
     val context = LocalContext.current
+    val canPickDate = state.period == ReplayPeriod.THIS_MONTH || state.period == ReplayPeriod.THIS_YEAR
     val summary = state.summary
     val leadArtwork = summary?.songs?.firstOrNull()?.song?.thumbnailUrl
     val palette = rememberArtworkColors(leadArtwork)
@@ -174,7 +178,15 @@ fun ReplayScreen(
             modifier = Modifier.fillMaxSize(),
             contentPadding = contentPadding,
         ) {
-            item("heading") { Heading(state, onPeriodChange, dark) }
+            item("heading") {
+                Heading(
+                    state = state,
+                    onPeriodChange = onPeriodChange,
+                    dark = dark,
+                    onOpenDatePicker = { if (canPickDate) onOpenDatePicker() },
+                    canPickDate = canPickDate,
+                )
+            }
 
             when {
                 state.loading && summary == null -> item("loading") {
@@ -265,7 +277,13 @@ fun ReplayScreen(
 // ── Heading ─────────────────────────────────────────────────────────────────
 
 @Composable
-private fun Heading(state: ReplayState, onPeriodChange: (ReplayPeriod) -> Unit, dark: Boolean) {
+private fun Heading(
+    state: ReplayState,
+    onPeriodChange: (ReplayPeriod) -> Unit,
+    dark: Boolean,
+    canPickDate: Boolean,
+    onOpenDatePicker: () -> Unit,
+) {
     val context = LocalContext.current
     val textColor = if (dark) Color.White else Color.Black
     Column(Modifier.padding(horizontal = PAGE_GUTTER + 4.dp)) {
@@ -277,9 +295,15 @@ private fun Heading(state: ReplayState, onPeriodChange: (ReplayPeriod) -> Unit, 
             color = textColor,
         )
         Text(
-            text = state.summary?.localizedLabel(context) ?: state.period.localizedChip(context),
+            text = state.period.localizedDateLabel(context, state.selectedMonth),
             style = MaterialTheme.typography.titleMedium,
             color = textColor.copy(alpha = 0.6f),
+            modifier = Modifier
+                .then(
+                    if (canPickDate) Modifier.clickable(role = Role.Button, onClick = onOpenDatePicker)
+                    else Modifier,
+                )
+                .heightIn(min = 48.dp),
         )
         Spacer(Modifier.height(14.dp))
         PeriodPicker(state.period, onPeriodChange, dark)

@@ -19,6 +19,7 @@ import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.drop
 import kotlinx.coroutines.withContext
 import java.time.LocalDate
+import java.time.YearMonth
 import java.time.format.DateTimeFormatter
 import java.util.Locale
 
@@ -36,6 +37,8 @@ import java.util.Locale
  */
 class ReplayState(
     val period: ReplayPeriod,
+    val selectedMonth: YearMonth,
+    val earliestMonth: YearMonth?,
     val summary: ReplaySummary?,
     val loading: Boolean,
     /**
@@ -58,8 +61,13 @@ class ReplayState(
  *   since is on it.
  */
 @Composable
-fun rememberReplayState(active: Boolean): Pair<ReplayState, (ReplayPeriod) -> Unit> {
+fun rememberReplayState(
+    active: Boolean,
+): Triple<ReplayState, (ReplayPeriod) -> Unit, (YearMonth) -> Unit> {
     var period by rememberSaveable { mutableStateOf(ReplayPeriod.THIS_YEAR) }
+    var selectedMonthText by remember { mutableStateOf(YearMonth.now().toString()) }
+    val selectedMonth = remember(selectedMonthText) { YearMonth.parse(selectedMonthText) }
+    var earliestMonth by remember { mutableStateOf<YearMonth?>(null) }
     var summary by remember { mutableStateOf<ReplaySummary?>(null) }
     var loading by remember { mutableStateOf(true) }
     var memberSince by remember { mutableStateOf<String?>(null) }
@@ -67,19 +75,24 @@ fun rememberReplayState(active: Boolean): Pair<ReplayState, (ReplayPeriod) -> Un
     LaunchedEffect(active) {
         if (!active) return@LaunchedEffect
         // A directory listing, so off the composition's thread.
-        memberSince = withContext(Dispatchers.IO) {
-            ListeningStats.months().firstOrNull()?.let {
-                "%02d/%02d".format(Locale.ROOT, it.monthValue, it.year % 100)
-            }
+        val firstMonth = withContext(Dispatchers.IO) { ListeningStats.months().firstOrNull() }
+        earliestMonth = firstMonth
+        memberSince = firstMonth?.let {
+            "%02d/%02d".format(Locale.ROOT, it.monthValue, it.year % 100)
         }
     }
-    LaunchedEffect(period, active) {
+    LaunchedEffect(earliestMonth, selectedMonth) {
+        val firstMonth = earliestMonth ?: return@LaunchedEffect
+        val boundedMonth = selectedMonth.coerceIn(firstMonth, YearMonth.now())
+        if (selectedMonth != boundedMonth) selectedMonthText = boundedMonth.toString()
+    }
+    LaunchedEffect(period, selectedMonth, active) {
         if (!active) return@LaunchedEffect
         // Only the first read shows a spinner. Switching period must not blank
         // the charts for the beat it takes to merge the files — that reads as
         // the page breaking rather than as it answering a different question.
         loading = summary == null
-        summary = ListeningStats.summary(period)
+        summary = ListeningStats.summary(period, selectedMonth)
         loading = false
 
         // Artist pictures and pages arrive after the page has been built — see
@@ -93,11 +106,14 @@ fun rememberReplayState(active: Boolean): Pair<ReplayState, (ReplayPeriod) -> Un
         // gets as far as a rebuild.
         ArtistFacts.revision.drop(1).collectLatest {
             delay(SETTLE_MILLIS)
-            summary = ListeningStats.summary(period)
+            summary = ListeningStats.summary(period, selectedMonth)
         }
     }
-    return ReplayState(period, summary, loading, memberSince) to
-        { next: ReplayPeriod -> period = next }
+    return Triple(
+        ReplayState(period, selectedMonth, earliestMonth, summary, loading, memberSince),
+        { next: ReplayPeriod -> period = next },
+        { month: YearMonth -> selectedMonthText = month.toString() },
+    )
 }
 
 /** How long a burst of artist lookups is allowed to settle before a rebuild. */
@@ -182,10 +198,12 @@ fun ReplaySummary.storyHeadline(context: Context, page: ReplayStoryPage): List<H
     )
 }
 
-fun ReplayPeriod.localizedChip(context: Context): String = when (this) {
+fun ReplayPeriod.localizedDateLabel(context: Context, selectedMonth: YearMonth): String = when (this) {
     ReplayPeriod.THIS_WEEK -> context.getString(R.string.replay_this_week)
-    ReplayPeriod.THIS_MONTH -> context.getString(R.string.this_month)
-    ReplayPeriod.THIS_YEAR -> context.getString(R.string.this_year)
+    ReplayPeriod.THIS_MONTH -> DateTimeFormatter.ofPattern("MMMM yyyy", Locale.getDefault())
+        .format(selectedMonth.atDay(1))
+        .replaceFirstChar { it.titlecase(Locale.getDefault()) }
+    ReplayPeriod.THIS_YEAR -> selectedMonth.year.toString()
     ReplayPeriod.ALL_TIME -> context.getString(R.string.all_time)
 }
 
@@ -197,14 +215,7 @@ fun ReplayPeriod.localizedTab(context: Context): String = when (this) {
     ReplayPeriod.ALL_TIME -> context.getString(R.string.replay_period_lifetime)
 }
 
-fun ReplaySummary.localizedLabel(context: Context): String = when (period) {
-    ReplayPeriod.THIS_WEEK -> "This week"
-    ReplayPeriod.THIS_MONTH -> DateTimeFormatter.ofPattern("MMMM yyyy", Locale.getDefault())
-        .format(LocalDate.now())
-        .replaceFirstChar { it.titlecase(Locale.getDefault()) }
-    ReplayPeriod.THIS_YEAR -> LocalDate.now().year.toString()
-    ReplayPeriod.ALL_TIME -> context.getString(R.string.all_time)
-}
+fun ReplaySummary.localizedLabel(context: Context): String = period.localizedDateLabel(context, selectedMonth)
 
 /**
  * Which cover a card is washed in.

@@ -100,6 +100,7 @@ object ListeningStats {
 
     private class Cached(
         val period: ReplayPeriod,
+        val selectedMonth: YearMonth,
         val version: Long,
         val facts: Int,
         val day: LocalDate,
@@ -338,7 +339,10 @@ object ListeningStats {
      * files, and the one being written to is flushed first so that the page
      * agrees with what has just been playing.
      */
-    suspend fun summary(period: ReplayPeriod): ReplaySummary = withContext(Dispatchers.IO) {
+    suspend fun summary(
+        period: ReplayPeriod,
+        selectedMonth: YearMonth = YearMonth.now(),
+    ): ReplaySummary = withContext(Dispatchers.IO) {
         flushAndAwait()
         val today = LocalDate.now()
         val facts = ArtistFacts.revision.value
@@ -349,7 +353,8 @@ object ListeningStats {
         // Library tab asks for this, so it is asked often and usually for an
         // answer that has not changed.
         cached?.takeIf {
-            it.period == period && it.version == version && it.facts == facts && it.day == today
+            it.period == period && it.selectedMonth == selectedMonth &&
+                it.version == version && it.facts == facts && it.day == today
         }?.let { return@withContext it.summary }
 
         val merged = MergedBucket()
@@ -364,12 +369,12 @@ object ListeningStats {
                 }.forEach { month -> read(month.toString())?.let { bucket -> merged.add(bucket, range) } }
             }
             else -> {
-                months().filter { period.covers(it, today) }
+                months().filter { period.covers(it, today, selectedMonth) }
                     .forEach { month -> read(month.toString())?.let(merged::add) }
             }
         }
-        merged.toSummary(period, today).also {
-            cached = Cached(period, version, facts, today, it)
+        merged.toSummary(period, today, selectedMonth).also {
+            cached = Cached(period, selectedMonth, version, facts, today, it)
         }
     }
 
@@ -611,7 +616,7 @@ object ListeningStats {
             }
         }
 
-        fun toSummary(period: ReplayPeriod, today: LocalDate): ReplaySummary {
+        fun toSummary(period: ReplayPeriod, today: LocalDate, selectedMonth: YearMonth): ReplaySummary {
             // For weekly mode, compute per-entity totals from day-level sub-buckets.
             val weekRange = if (period.needsDayFilter()) period.range(today) else null
 
@@ -754,7 +759,8 @@ object ListeningStats {
             val busiest = days.entries.maxByOrNull { it.value }
             return ReplaySummary(
                 period = period,
-                label = period.label(today),
+                selectedMonth = selectedMonth,
+                label = period.label(today, selectedMonth),
                 totalMs = rankedSongs.sumOf { it.ms },
                 totalPlays = rankedSongs.sumOf { it.plays },
                 songs = rankedSongs,
@@ -1035,26 +1041,30 @@ enum class ReplayPeriod(val chip: String) {
         ALL_TIME -> null
     }
 
-    fun covers(month: YearMonth, today: LocalDate): Boolean = when (this) {
+    fun covers(
+        month: YearMonth,
+        today: LocalDate,
+        selectedMonth: YearMonth = YearMonth.from(today),
+    ): Boolean = when (this) {
         THIS_WEEK -> {
             val range = month.atDay(1)..month.atEndOfMonth()
             val weekStart = today.with(java.time.DayOfWeek.MONDAY)
             val weekEnd = today
             !(weekEnd < range.start || weekStart > range.endInclusive)
         }
-        THIS_MONTH -> month == YearMonth.from(today)
-        THIS_YEAR -> month.year == today.year
+        THIS_MONTH -> month == selectedMonth
+        THIS_YEAR -> month.year == selectedMonth.year
         ALL_TIME -> true
     }
 
     /** Whether this period needs day-level filtering (week spans potentially multiple months). */
     fun needsDayFilter(): Boolean = this == THIS_WEEK
 
-    fun label(today: LocalDate): String = when (this) {
+    fun label(today: LocalDate, selectedMonth: YearMonth = YearMonth.from(today)): String = when (this) {
         THIS_WEEK -> "This week"
-        THIS_MONTH -> YearMonth.from(today).month.name.lowercase(Locale.ROOT)
-            .replaceFirstChar { it.uppercase(Locale.ROOT) } + " ${today.year}"
-        THIS_YEAR -> today.year.toString()
+        THIS_MONTH -> selectedMonth.month.name.lowercase(Locale.ROOT)
+            .replaceFirstChar { it.uppercase(Locale.ROOT) } + " ${selectedMonth.year}"
+        THIS_YEAR -> selectedMonth.year.toString()
         ALL_TIME -> "All time"
     }
 }
@@ -1068,6 +1078,7 @@ enum class ReplayPeriod(val chip: String) {
  */
 data class ReplaySummary(
     val period: ReplayPeriod,
+    val selectedMonth: YearMonth,
     val label: String,
     val totalMs: Long,
     val totalPlays: Int,

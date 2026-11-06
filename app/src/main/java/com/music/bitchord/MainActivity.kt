@@ -347,9 +347,11 @@ import com.music.bitchord.ui.screens.HomeScreen
 import com.music.bitchord.ui.screens.LibraryGridPage
 import com.music.bitchord.ui.screens.LibraryScreen
 import com.music.bitchord.ui.screens.MoodGenrePlaylistsScreen
+import com.music.bitchord.data.stats.ReplayPeriod
 import com.music.bitchord.ui.screens.SearchScreen
 import com.music.bitchord.data.settings.SongSort
 import com.music.bitchord.ui.onboarding.OnboardingScreen
+import com.music.bitchord.ui.replay.ReplayDatePicker
 import com.music.bitchord.ui.replay.ReplayScreen
 import com.music.bitchord.ui.replay.cards
 import com.music.bitchord.ui.replay.ReplayShareSheet
@@ -529,6 +531,7 @@ private fun BitChordApp(
     val context = LocalContext.current
     val clipboard = LocalClipboardManager.current
     val hazeState = remember { HazeState() }
+    var showReplayDatePicker by remember { mutableStateOf(false) }
     // Recording the backdrop layer costs a draw pass, so it only runs when a
     // liquid-glass surface (the nav bar or artwork-page back button) can sample it.
     val glassActive = LocalLiquidGlassEnabled.current && isGlassSupported()
@@ -2424,7 +2427,13 @@ private fun BitChordApp(
     // See [rememberReplayState].
     val replayOpen = route == AppRoute.Replay || replayStory != null || showReplayShare ||
         (selectedTab == TAB_LIBRARY && detail == null && route == null)
-    val (replay, setReplayPeriod) = rememberReplayState(replayOpen)
+    val (replay, setReplayPeriod, setReplayMonth) = rememberReplayState(replayOpen)
+    LaunchedEffect(route) {
+        if (route != AppRoute.Replay) {
+            showReplayDatePicker = false
+            setReplayMonth(java.time.YearMonth.now())
+        }
+    }
     val replayCards = remember(replay.summary) {
         replay.summary?.takeUnless { it.isEmpty }?.cards(context).orEmpty()
     }
@@ -2518,6 +2527,7 @@ private fun BitChordApp(
         BackHandler(enabled = editingSource != null) { editingSource = null }
         BackHandler(enabled = editingPartyServer) { editingPartyServer = false }
         BackHandler(enabled = editingSignatureApi) { editingSignatureApi = false }
+        BackHandler(enabled = showReplayDatePicker) { showReplayDatePicker = false }
 
         // On a tablet the page and the player stand side by side rather than
         // one over the other: everything a phone stacks in a single column —
@@ -2711,6 +2721,7 @@ private fun BitChordApp(
                                 state = replay,
                                 holder = account?.name.orEmpty(),
                                 onPeriodChange = setReplayPeriod,
+                                onOpenDatePicker = { showReplayDatePicker = true },
                                 onOpenStory = { replayStory = it },
                                 // A track tapped on a chart is one the user already
                                 // knows they like, so it starts a station off itself
@@ -5891,6 +5902,23 @@ private fun BitChordApp(
                     confirmFixedVolume = false
                 },
                 onDismiss = { confirmFixedVolume = false },
+            )
+        }
+
+        if (
+            showReplayDatePicker && route == AppRoute.Replay &&
+            (replay.period == ReplayPeriod.THIS_MONTH || replay.period == ReplayPeriod.THIS_YEAR)
+        ) {
+            ReplayDatePicker(
+                period = replay.period,
+                selectedMonth = replay.selectedMonth,
+                earliestMonth = replay.earliestMonth,
+                hazeState = hazeState,
+                onSelect = { month ->
+                    setReplayMonth(month)
+                    showReplayDatePicker = false
+                },
+                onDismiss = { showReplayDatePicker = false },
             )
         }
 
