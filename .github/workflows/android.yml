@@ -31,7 +31,18 @@ jobs:
       with:
         java-version: '17'
         distribution: 'temurin'
-        cache: gradle
+
+    - uses: gradle/actions/setup-gradle@v4
+
+    # A fresh key per commit, restored from the newest older one: Gradle's local
+    # build cache persists across runs without setup-java's immutable whole-cache
+    # key freezing it at the first save.
+    - name: Cache Gradle build cache
+      uses: actions/cache@v4
+      with:
+        path: ~/.gradle/caches/build-cache-1
+        key: gradle-build-cache-${{ github.sha }}
+        restore-keys: gradle-build-cache-
 
     - name: Setup Secrets & Keystore
       run: |
@@ -66,7 +77,17 @@ jobs:
       run: chmod +x gradlew
 
     - name: Build Signed Prod Release APK
-      run: ./gradlew :app:assembleProdRelease
+      run: ./gradlew :app:assembleProdRelease --max-workers=$(nproc) --profile
+
+    - name: Upload Gradle profile
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: gradle-profile
+        path: |
+          build/reports/profile/
+          app/build/reports/profile/
+        if-no-files-found: ignore
 
     - name: Collect Release APKs
       run: |
