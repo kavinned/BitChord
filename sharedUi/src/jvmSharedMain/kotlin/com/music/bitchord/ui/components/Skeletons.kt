@@ -211,7 +211,13 @@ private fun RecentsHeaderSkeleton() {
     }
 }
 
-/** The compact carousel of square cards used by every shelf below the first. */
+/**
+ * The compact carousel of square cards.
+ *
+ * Built on a [LazyRow] with scrolling off rather than a plain [Row], so a card
+ * running past the right edge is measured and clipped exactly as the real
+ * shelf's is — which is the whole point of a skeleton.
+ */
 @Composable
 fun ShelfSkeleton(index: Int = 0, cardWidth: Dp = SHELF_CARD_WIDTH, cardCorner: Dp = 12.dp) {
     Column(Modifier.padding(bottom = 26.dp)) {
