@@ -34,6 +34,23 @@
 
 <div align="center">
 
+<h1><a id="fork-features"></a>Fork Additions</h1>
+
+</div>
+
+This fork, [**kavinned/BitChord**](https://github.com/kavinned/BitChord), tracks upstream BitChord and adds the following on top of the features below:
+
+- **Smart source alignment** — when a higher-quality source becomes available mid-track, analyzes both waveforms and switches at the matching playback moment with a crossfade, instead of skipping or repeating a beat. Gated behind *Smart audio alignment*; off by default.
+- **Addon source prefetching** — resolves high-quality addon streams for upcoming queue tracks before playback starts, in rank order with lossless first. Off by default; the next track's prefetch state appears in Stats for nerds.
+- **Rounded miniplayer artwork** — opt-in toggle that curves the album art corners to match the miniplayer pill.
+- **Replay month and year picker** — browse any month or year in your listening history, not just the current period.
+
+Alongside those, the fork carries security hardening (third-party module sandboxing, APK identity and signature checks before install, cleartext WebDAV refusal) and a long tail of playback, cache, startup and UI fixes and performance work.
+
+---
+
+<div align="center">
+
 <img src="Banner.png" alt="BitChord banner" width="100%" />
 
 <h1><a id="features"></a>Features</h1>
