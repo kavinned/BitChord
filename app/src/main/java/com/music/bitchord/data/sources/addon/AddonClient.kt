@@ -580,7 +580,9 @@ class AddonClient(rawBaseUrl: String, private val pickedQuality: String? = null)
         private const val BACKOFF_BASE_MS = 500L
         private const val BACKOFF_CAP_MS = 8_000L
 
-        private val USER_AGENT = "BitChord/v${com.music.bitchord.BuildConfig.VERSION_NAME}"
+        internal const val USER_AGENT =
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 " +
+                "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
 
         /**
          * What [probeSearch] asks for. Deliberately an ordinary word rather
