@@ -33,4 +33,22 @@ class CanvasArtworkMatchTest {
     fun `a hit naming another artist is refused`() {
         assertFalse(clip(title = "Song", artist = "Other Artist").matches("Song", "Artist", null))
     }
+
+    /**
+     * Apple tags every EP and single with the release format — "TUNNEL VISION
+     * - EP" — while YouTube Music names the same release "TUNNEL VISION". The
+     * exact comparison that guard runs rejected every Apple clip for a track
+     * queued from YouTube, so its cover never animated.
+     */
+    @Test
+    fun `a release-format suffix difference does not reject the album`() {
+        assertTrue(clip(album = "TUNNEL VISION - EP").matches("Song", "Artist", "TUNNEL VISION"))
+        assertTrue(clip(album = "TUNNEL VISION").matches("Song", "Artist", "TUNNEL VISION - EP"))
+        assertTrue(clip(album = "GOTCHA - Single").matches("Song", "Artist", "GOTCHA"))
+    }
+
+    @Test
+    fun `a different album is still refused with the suffix rule`() {
+        assertFalse(clip(album = "IVE SECRET - EP").matches("Song", "Artist", "TUNNEL VISION"))
+    }
 }

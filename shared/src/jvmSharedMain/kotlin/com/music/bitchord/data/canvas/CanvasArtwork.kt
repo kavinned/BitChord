@@ -59,11 +59,23 @@ data class CanvasArtwork(
                 titleArtists.all { want -> ourArtists.any { it == want } })
 
         val albumOk = album.isNullOrBlank() || wantAlbum.isNullOrBlank() ||
-            album.normalizeForMatch() == wantAlbum.normalizeForMatch()
+            album.normalizeForMatch().withoutReleaseSuffix() ==
+                wantAlbum.normalizeForMatch().withoutReleaseSuffix()
 
         return titleOk && artistOk && albumOk
     }
 }
+
+/**
+ * Apple tags releases with their format — "TUNNEL VISION - EP", "GOTCHA -
+ * Single" — while YouTube Music names the same release "TUNNEL VISION",
+ * "GOTCHA". The format is packaging, not identity: it comes off before the
+ * album comparison, on both sides, so a name that already agreed still agrees
+ * and one that only differed by the tag no longer fails the whole clip.
+ */
+fun String.withoutReleaseSuffix(): String =
+    removeSuffix(" ep").removeSuffix(" single").removeSuffix(" album")
+        .trim()
 
 /**
  * Case, accents and punctuation all differ between YouTube Music, Apple and
