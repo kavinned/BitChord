@@ -377,6 +377,17 @@ class AddonSourceTest {
     }
 
     @Test
+    fun `addon requests present a browser user agent, not the app name`() = runBlocking {
+        route("/manifest.json", manifest())
+        route("/search", json("""{"tracks":[]}"""))
+        AddonSource(config()).search("song", limit = 5)
+
+        val agent = synchronized(seen) { seen.first().getHeader("User-Agent") }
+        assertEquals(AddonClient.USER_AGENT, agent)
+        assertFalse(agent.orEmpty().contains("bitchord", ignoreCase = true))
+    }
+
+    @Test
     fun `manual refresh asks again after a cached empty search`() = runBlocking {
         route("/manifest.json", manifest())
         route("/search", json("""{"tracks":[]}"""))
