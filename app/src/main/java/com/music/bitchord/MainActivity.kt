@@ -278,6 +278,7 @@ import com.music.bitchord.ui.components.ListenBrainzTokenAlert
 import com.music.bitchord.ui.components.MiniPlayer
 import com.music.bitchord.ui.components.QueueActionNotice
 import com.music.bitchord.ui.components.QueueActionNoticeHost
+import com.music.bitchord.ui.components.shouldAutoDismissQueueActionNotice
 import com.music.bitchord.ui.components.TopBarAccountButton
 import com.music.bitchord.ui.screens.SegmentedControl
 import com.music.bitchord.ui.components.SearchField
@@ -1095,15 +1096,16 @@ private fun BitChordApp(
     val controlsLocked = partyState.controlsLocked
     var queueNotice by remember { mutableStateOf<QueueActionNotice?>(null) }
     var queueNoticeId by remember { mutableIntStateOf(0) }
-    val showQueueNotice: (String) -> Unit = { message ->
+    fun showQueueNotice(message: String, loading: Boolean = false) {
         queueNoticeId += 1
-        queueNotice = QueueActionNotice(queueNoticeId, message)
+        queueNotice = QueueActionNotice(queueNoticeId, message, loading)
     }
     val dismissQueueNotice: (Int) -> Unit = { id ->
         if (queueNotice?.id == id) queueNotice = null
     }
-    LaunchedEffect(queueNotice?.id) {
+    LaunchedEffect(queueNotice?.id, queueNotice?.loading) {
         val shown = queueNotice ?: return@LaunchedEffect
+        if (!shouldAutoDismissQueueActionNotice(shown)) return@LaunchedEffect
         delay(3_000)
         if (queueNotice?.id == shown.id) queueNotice = null
     }
@@ -4995,6 +4997,10 @@ private fun BitChordApp(
                 onDismiss = dismiss,
                 onAdd = { picked ->
                     target?.let { song ->
+                        showQueueNotice(
+                            context.getString(R.string.adding_to_playlist),
+                            loading = true,
+                        )
                         viewModel.addToPlaylists(picked, song) { added, alreadyThere, failed ->
                             // One line for the whole batch, saying the outcome
                             // that matters most: what went in, else that it was
