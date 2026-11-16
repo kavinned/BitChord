@@ -1,5 +1,7 @@
 package com.music.bitchord
 
+import com.music.bitchord.ui.components.QueueActionNotice
+import com.music.bitchord.ui.components.shouldAutoDismissQueueActionNotice
 import com.music.bitchord.ui.components.shouldDismissQueueActionNotice
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -18,5 +20,14 @@ class QueueActionNoticeTest {
         assertFalse(shouldDismissQueueActionNotice(340f, 1_000f))
         assertFalse(shouldDismissQueueActionNotice(-340f, 1_000f))
         assertFalse(shouldDismissQueueActionNotice(1f, 0f))
+    }
+
+    @Test
+    fun `only a settled notice auto-dismisses`() {
+        assertTrue(shouldAutoDismissQueueActionNotice(QueueActionNotice(1, "Added to playlist")))
+        assertFalse(
+            shouldAutoDismissQueueActionNotice(QueueActionNotice(2, "Adding…", loading = true)),
+        )
+        assertFalse(shouldAutoDismissQueueActionNotice(null))
     }
 }

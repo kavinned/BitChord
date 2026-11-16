@@ -11,10 +11,14 @@ import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -22,6 +26,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.shadow
@@ -44,7 +49,13 @@ import kotlin.math.abs
 data class QueueActionNotice(
     val id: Int,
     val message: String,
+    val loading: Boolean = false,
 )
+
+/** Loading notices stay until their result arrives; only settled ones time out. */
+internal fun shouldAutoDismissQueueActionNotice(notice: QueueActionNotice?): Boolean =
+    notice != null && !notice.loading
+
 
 /** Whether a horizontal drag is far enough to dismiss the notice. */
 internal fun shouldDismissQueueActionNotice(dragPx: Float, widthPx: Float): Boolean =
@@ -121,12 +132,24 @@ fun QueueActionNoticeHost(
                     )
                     .border(0.5.dp, Color.White.copy(alpha = 0.10f), shape),
             ) {
-                Text(
-                    text = current.message,
-                    style = MaterialTheme.typography.bodyLarge,
-                    color = MaterialTheme.colorScheme.onSurface,
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(12.dp),
                     modifier = Modifier.padding(horizontal = 20.dp, vertical = 16.dp),
-                )
+                ) {
+                    if (current.loading) {
+                        CircularProgressIndicator(
+                            modifier = Modifier.size(16.dp),
+                            strokeWidth = 2.dp,
+                            color = MaterialTheme.colorScheme.onSurface,
+                        )
+                    }
+                    Text(
+                        text = current.message,
+                        style = MaterialTheme.typography.bodyLarge,
+                        color = MaterialTheme.colorScheme.onSurface,
+                    )
+                }
             }
         }
     }
