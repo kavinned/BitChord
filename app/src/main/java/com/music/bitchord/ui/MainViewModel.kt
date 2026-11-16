@@ -1068,7 +1068,12 @@ class MainViewModel(
         song: Song,
         onResult: (added: Int, alreadyThere: Int, failed: Int) -> Unit = { _, _, _ -> },
     ) {
-        if (!requireSignIn() || playlists.isEmpty()) return
+        if (!requireSignIn() || playlists.isEmpty()) {
+            // The caller may already be showing a loading notice; answer it
+            // rather than leaving it spinning over a request never made.
+            onResult(0, 0, playlists.size)
+            return
+        }
         viewModelScope.launch {
             val outcomes = playlists.map { addOne(it, song) }
             onResult(

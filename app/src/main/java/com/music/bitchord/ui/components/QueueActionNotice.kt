@@ -56,7 +56,6 @@ data class QueueActionNotice(
 internal fun shouldAutoDismissQueueActionNotice(notice: QueueActionNotice?): Boolean =
     notice != null && !notice.loading
 
-
 /** Whether a horizontal drag is far enough to dismiss the notice. */
 internal fun shouldDismissQueueActionNotice(dragPx: Float, widthPx: Float): Boolean =
     widthPx > 0f && abs(dragPx) >= widthPx * 0.35f
