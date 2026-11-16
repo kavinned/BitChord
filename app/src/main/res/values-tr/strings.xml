@@ -1201,6 +1201,7 @@
     <string name="song_will_play_next">Şarkı sonra çalacak</string>
 
     <string name="song_added_to_queue">Şarkı sıraya eklendi</string>
+    <string name="adding_to_playlist">Adding…</string>
     <string name="song_added_to_playlist">Çalma listesine eklendi</string>
     <string name="song_already_in_playlist">Zaten çalma listesinde</string>
     <plurals name="add_to_playlists_count">

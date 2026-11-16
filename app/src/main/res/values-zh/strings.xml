@@ -1223,6 +1223,7 @@
     <string name="song_will_play_next">Song will play next</string>
 
     <string name="song_added_to_queue">Song added to queue</string>
+    <string name="adding_to_playlist">Adding…</string>
     <string name="song_added_to_playlist">已添加到播放列表</string>
     <string name="song_already_in_playlist">已在播放列表中</string>
     <plurals name="add_to_playlists_count">

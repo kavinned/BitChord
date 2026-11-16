@@ -1183,6 +1183,7 @@
     <string name="song_will_play_next">Song will play next</string>
 
     <string name="song_added_to_queue">Song added to queue</string>
+    <string name="adding_to_playlist">Adding…</string>
     <string name="song_added_to_playlist">Aggiunto alla playlist</string>
     <string name="song_already_in_playlist">Già nella playlist</string>
     <plurals name="add_to_playlists_count">
