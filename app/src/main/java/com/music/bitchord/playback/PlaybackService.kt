@@ -10663,6 +10663,9 @@ class PlaybackService : MediaLibraryService() {
             startIndex: Int,
             startPositionMs: Long,
         ): ListenableFuture<MediaSession.MediaItemsWithStartPosition> = scope.future(Dispatchers.IO) {
+            if (!isTrusted(mediaSession, controller)) {
+                throw SecurityException("Untrusted controller")
+            }
             val selected = (if (startIndex in mediaItems.indices) mediaItems[startIndex] else null)
                 ?: mediaItems.singleOrNull()
                 ?: mediaItems.firstOrNull { it.mediaId.startsWith("auto-browse:") }
