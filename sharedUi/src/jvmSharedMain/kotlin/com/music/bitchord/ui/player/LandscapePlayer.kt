@@ -1,6 +1,7 @@
 package com.music.bitchord.ui.player
 
 import dev.chrisbanes.haze.HazeState
+import dev.chrisbanes.haze.hazeSource
 import com.music.bitchord.sharedui.resources.*
 
 import androidx.compose.animation.Crossfade
@@ -305,6 +306,7 @@ internal fun LandscapeArtwork(
     sleeveShape: () -> Shape = { LandscapeArtShape },
     /** How much of the sleeve's shadow is cast, 1 at rest. */
     shadowFraction: () -> Float = { 1f },
+    hazeState: HazeState? = null,
     overlay: @Composable BoxScope.() -> Unit = {},
 ) {
     val casts = artLoaded || canvasRendered
@@ -328,7 +330,8 @@ internal fun LandscapeArtwork(
                     shape = sleeveShape()
                     clip = true
                 }
-                .background(Color.Black.copy(alpha = 0.18f)),
+                .background(Color.Black.copy(alpha = 0.18f))
+                .then(if (hazeState != null) Modifier.hazeSource(hazeState) else Modifier),
             contentAlignment = Alignment.Center,
         ) {
             if (!artLoaded && !canvasRendered) {

@@ -27,7 +27,7 @@ import androidx.compose.animation.core.tween
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.collectAsState
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableFloatStateOf
@@ -503,7 +503,7 @@ internal fun AndroidCanvasArtworkPlayer(
         }
     }
 
-    val reducedMotion = if (organicReveal?.allowSpatialMask == true) AppSettings.reduceAnimation.collectAsState() else null
+    val reducedMotion = if (organicReveal?.allowSpatialMask == true) AppSettings.reduceAnimation.collectAsStateWithLifecycle() else null
     val systemMotion = if (organicReveal?.allowSpatialMask == true) rememberCoroutineScope().coroutineContext[MotionDurationScale] else null
     AndroidView(
         factory = { viewContext ->

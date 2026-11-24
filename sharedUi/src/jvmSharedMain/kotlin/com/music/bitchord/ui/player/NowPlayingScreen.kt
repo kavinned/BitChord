@@ -2426,6 +2426,7 @@ fun NowPlayingScreen(
                             // Let go of on the way to the mini player, whose
                             // cover sits flat in its bar.
                             shadowFraction = dockT,
+                            hazeState = if (frostOff) null else playerHaze,
                             modifier = artworkModifier
                                 .then(
                                     if (dock != null) {
@@ -4656,7 +4657,7 @@ fun NowPlayingScreen(
                             onNext = onNext,
                             animationsActive = !lyricPicker.picking &&
                                 (!lyricsOpen || lyricsControlsOpen) &&
-                                (!queueOpen || queueControlsOpen) &&
+                                (!queueOpen || (queueControlsOpen && !queueSelection.active)) &&
                                 (!spotifyCanvasPresentation || spotifyCanvasControlsOpen || mixing),
                         )
                     }

@@ -398,9 +398,10 @@ internal fun rememberArtworkColors(
         if (imageUrl == null || seed != null) return@LaunchedEffect
         val next = cachedArtworkPalette(imageUrl) ?: run {
             val bitmap = loadArtworkPaletteBitmap(context, imageUrl) ?: return@LaunchedEffect
-            withContext(Dispatchers.Default) { MeshPalette(paletteOf(bitmap)) }
+            withContext(Dispatchers.Default) { MeshPalette(paletteOf(bitmap)) }.also { computed ->
+                synchronized(artworkPaletteCache) { artworkPaletteCache[imageUrl] = computed }
+            }
         }
-        artworkPaletteCache[imageUrl] = next
         palette = next
     }
 
@@ -421,13 +422,14 @@ private val artworkPaletteCache = object : LinkedHashMap<String, MeshPalette>(0,
     override fun removeEldestEntry(eldest: Map.Entry<String, MeshPalette>) = size > 8
 }
 
-internal fun cachedArtworkPalette(imageUrl: String?): MeshPalette? = imageUrl?.let(artworkPaletteCache::get)
+internal fun cachedArtworkPalette(imageUrl: String?): MeshPalette? =
+    imageUrl?.let { synchronized(artworkPaletteCache) { artworkPaletteCache[it] } }
 
 internal suspend fun prefetchArtworkPalette(context: PlatformContext, imageUrl: String): MeshPalette? {
     cachedArtworkPalette(imageUrl)?.let { return it }
     val bitmap = loadArtworkPaletteBitmap(context, imageUrl) ?: return null
     val palette = withContext(Dispatchers.Default) { MeshPalette(paletteOf(bitmap)) }
-    artworkPaletteCache[imageUrl] = palette
+    synchronized(artworkPaletteCache) { artworkPaletteCache[imageUrl] = palette }
     return palette
 }
 
