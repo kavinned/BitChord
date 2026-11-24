@@ -192,6 +192,9 @@ private fun RuntimeShader.setPattern(generation: Long) {
     setFloatUniform("seedOffset", random.nextFloat() * Tuning.NOISE_SEED_SPAN, random.nextFloat() * Tuning.NOISE_SEED_SPAN)
 }
 
+@RequiresApi(Build.VERSION_CODES.TIRAMISU)
+private val OpaqueBlackGradient = LinearGradient(0f, 0f, 0f, 1f, Color.BLACK, Color.BLACK, Shader.TileMode.CLAMP)
+
 /** The TextureView's RenderNode supplies the live texture as a GPU input. */
 @RequiresApi(Build.VERSION_CODES.TIRAMISU)
 internal class LiveAutoMixMask {
@@ -204,7 +207,6 @@ internal class LiveAutoMixMask {
         }
     """.trimIndent())
     private var patternGeneration: Long? = null
-    private val opaque = LinearGradient(0f, 0f, 0f, 1f, Color.BLACK, Color.BLACK, Shader.TileMode.CLAMP)
     private var appliedBottomFade: Shader? = null
     private var appliedWidth = 0f
     private var appliedHeight = 0f
@@ -214,7 +216,7 @@ internal class LiveAutoMixMask {
             shader.setPattern(generation)
             patternGeneration = generation
         }
-        val gradient = bottomFade ?: opaque
+        val gradient = bottomFade ?: OpaqueBlackGradient
         if (appliedBottomFade !== gradient) {
             shader.setInputShader("bottomFade", gradient)
             appliedBottomFade = gradient
@@ -249,7 +251,6 @@ internal class OutgoingStillRevealMask {
             return content.eval(xy) * half(bottomFade.eval(xy).a * remaining);
         }
     """.trimIndent())
-    private val opaque = LinearGradient(0f, 0f, 0f, 1f, Color.BLACK, Color.BLACK, Shader.TileMode.CLAMP)
     private var appliedGeneration: Long? = null
     private var appliedBottom: Shader? = null
     private var appliedStill: Shader? = null
@@ -266,7 +267,7 @@ internal class OutgoingStillRevealMask {
             shader.setPattern(generation)
             appliedGeneration = generation
         }
-        val fade = bottom ?: opaque
+        val fade = bottom ?: OpaqueBlackGradient
         if (appliedBottom !== fade) {
             shader.setInputShader("bottomFade", fade)
             appliedBottom = fade
