@@ -198,11 +198,13 @@ class CastPlayback(
         reconcileJob?.cancel()
         reconcileJob = null
         reconcileAgain = false
-        queueRestoreExpectedMediaId = item?.mediaId.orEmpty()
         queueRestoreLoadAccepted = false
         if (item != null) {
+            queueRestoreExpectedMediaId = item.mediaId
             load(item, positionMs.coerceAtLeast(0L), playWhenReady)
         } else {
+            val alreadyIdle = remote.mediaStatus?.playerState == MediaStatus.PLAYER_STATE_IDLE
+            queueRestoreExpectedMediaId = if (alreadyIdle) null else ""
             loadJob?.cancel()
             ++loadGeneration
             wantsPlay = false
@@ -483,13 +485,19 @@ class CastPlayback(
                 throw e
             } catch (t: Throwable) {
                 Log.e(TAG, "load threw", t)
-                loadedGeneration = generation
-                loading = false
-                wantsPlay = false
-                say(R.string.cast_connect_failed)
-                sink?.onRemotePlaybackChanged()
+                if (generation == loadGeneration) failLoad(generation, R.string.cast_connect_failed)
             }
         }
+    }
+
+    private fun failLoad(generation: Int, messageRes: Int?) {
+        loadedGeneration = generation
+        queueRestoreExpectedMediaId = null
+        queueRestoreLoadAccepted = false
+        loading = false
+        wantsPlay = false
+        if (messageRes != null) say(messageRes)
+        sink?.onRemotePlaybackChanged()
     }
 
     private suspend fun loadNow(item: MediaItem?, positionMs: Long, play: Boolean, generation: Int, remote: RemoteMediaClient) {
@@ -499,11 +507,7 @@ class CastPlayback(
             if (queueItem == null) {
                 // Nothing to play, so nothing to wait for. The receiver is left
                 // as it was; only the phone's idea of it is corrected.
-                loadedGeneration = generation
-                loading = false
-                wantsPlay = false
-                if (item != null) say(R.string.cast_track_unsupported)
-                sink?.onRemotePlaybackChanged()
+                failLoad(generation, if (item != null) R.string.cast_track_unsupported else null)
                 return@run
             }
             val repeat = receiverRepeat(localPlayer()?.repeatMode ?: Player.REPEAT_MODE_OFF)
@@ -523,11 +527,7 @@ class CastPlayback(
             if (generation != loadGeneration || !active) return@run
             if (!result.status.isSuccess) {
                 Log.w(TAG, "load failed: ${result.status.statusCode}")
-                loadedGeneration = generation
-                loading = false
-                wantsPlay = false
-                say(R.string.cast_track_unsupported)
-                sink?.onRemotePlaybackChanged()
+                failLoad(generation, R.string.cast_track_unsupported)
                 return@run
             }
             lastItemId = remote.mediaStatus?.currentItemId ?: lastItemId
