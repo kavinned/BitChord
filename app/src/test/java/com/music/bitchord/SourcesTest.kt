@@ -1159,6 +1159,7 @@ class SourcesTest {
             limit: Int,
             waitForAll: Boolean,
             request: StreamRequest?,
+            target: TrackMatcher.Target?,
         ): List<Song> {
             asked = true
             try {
@@ -1200,6 +1201,7 @@ class SourcesTest {
             limit: Int,
             waitForAll: Boolean,
             request: StreamRequest?,
+            target: TrackMatcher.Target?,
         ): List<Song> = rows.map { it.first }
 
         override suspend fun stream(trackId: String, request: StreamRequest): SourceStream? =

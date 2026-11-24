@@ -21,6 +21,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
@@ -65,9 +66,11 @@ internal fun shouldDismissQueueActionNotice(dragPx: Float, widthPx: Float): Bool
 @Composable
 fun QueueActionNoticeHost(
     notice: QueueActionNotice?,
-    hazeState: HazeState,
-    onDismiss: (Int) -> Unit,
+    hazeState: HazeState? = null,
+    onDismiss: (Int) -> Unit = {},
     modifier: Modifier = Modifier,
+    actionLabel: String? = null,
+    onAction: (() -> Unit)? = null,
 ) {
     val reduceAnimation by AppSettings.reduceAnimation.collectAsStateWithLifecycle()
     val reduceDynamicBlur by AppSettings.reduceDynamicBlur.collectAsStateWithLifecycle()
@@ -120,7 +123,7 @@ fun QueueActionNoticeHost(
                     .shadow(4.dp, shape)
                     .clip(shape)
                     .then(
-                        if (reduceDynamicBlur) {
+                        if (reduceDynamicBlur || hazeState == null) {
                             Modifier.background(surface)
                         } else {
                             Modifier.optimizedHazeEffect(
@@ -134,7 +137,7 @@ fun QueueActionNoticeHost(
                 Row(
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(12.dp),
-                    modifier = Modifier.padding(horizontal = 20.dp, vertical = 16.dp),
+                    modifier = Modifier.padding(horizontal = 20.dp),
                 ) {
                     if (current.loading) {
                         CircularProgressIndicator(
@@ -147,7 +150,13 @@ fun QueueActionNoticeHost(
                         text = current.message,
                         style = MaterialTheme.typography.bodyLarge,
                         color = MaterialTheme.colorScheme.onSurface,
+                        modifier = Modifier.weight(1f).padding(vertical = 16.dp),
                     )
+                    if (actionLabel != null && onAction != null) {
+                        TextButton(onClick = onAction) {
+                            Text(actionLabel, color = MaterialTheme.colorScheme.onSurface)
+                        }
+                    }
                 }
             }
         }

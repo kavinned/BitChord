@@ -28,6 +28,12 @@ sealed interface AppRoute {
     data object Spotify : AppRoute
     data object Downloads : AppRoute
 
+    /** Settings → Backup and Restore → Google Drive backup. */
+    data object DriveBackup : AppRoute
+
+    /** Google Drive backup → which device this phone backs up or restores as. */
+    data object DriveDevices : AppRoute
+
     /** A Library shelf's "Show all" — its own cards laid out again as a grid. */
     data class LibraryShowAll(val shelf: HomeShelf) : AppRoute
 
@@ -224,6 +230,8 @@ private fun AppRoute.saveKey(): String? = when (this) {
     AppRoute.Spotify -> "Spotify"
     AppRoute.Downloads -> "Downloads"
     AppRoute.Moods -> "Moods"
+    AppRoute.DriveBackup -> "DriveBackup"
+    AppRoute.DriveDevices -> "DriveDevices"
     is AppRoute.SettingsSection -> "SettingsSection:${category.name}"
     is AppRoute.SettingsChoice -> "SettingsChoice:${choice.name}"
     is AppRoute.LibraryShowAll, is AppRoute.ArtistShelf -> null
@@ -246,6 +254,8 @@ private fun routeOf(key: String): AppRoute? {
         "Spotify" -> AppRoute.Spotify
         "Downloads" -> AppRoute.Downloads
         "Moods" -> AppRoute.Moods
+        "DriveBackup" -> AppRoute.DriveBackup
+        "DriveDevices" -> AppRoute.DriveDevices
         "SettingsSection" -> argument
             ?.let { runCatching { SettingsCategory.valueOf(it) }.getOrNull() }
             ?.let(AppRoute::SettingsSection)
