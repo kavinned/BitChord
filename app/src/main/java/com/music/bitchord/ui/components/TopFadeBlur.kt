@@ -56,6 +56,9 @@ private val FootFade = Brush.verticalGradient(
     },
 )
 
+/** Scroll-driven fade alpha limited to what Haze accepts; NaN reads as hidden. */
+internal fun clampTopFadeAlpha(raw: Float): Float = if (raw.isNaN()) 0f else raw.coerceIn(0f, 1f)
+
 /**
  * Apple's scroll edge at the top of the screen: whatever scrolls up under the
  * status bar and the floating controls is blurred, hardest along the top edge
@@ -81,6 +84,7 @@ fun TopFadeBlur(
     hazeState: HazeState,
     pageColor: Color,
     modifier: Modifier = Modifier,
+    alpha: () -> Float = { 1f },
 ) {
     Box(
         modifier = modifier
@@ -96,6 +100,10 @@ fun TopFadeBlur(
                 drawRect(FootFade, blendMode = BlendMode.DstIn)
             }
             .hazeEffect(state = hazeState) {
+                // Haze's own alpha, read here, so the effect node is invalidated when it
+                // leaves zero. An outer graphicsLayer alpha of 0 skipped the whole subtree
+                // on cold launch and nothing ever woke the node again (#1997).
+                this.alpha = clampTopFadeAlpha(alpha())
                 backgroundColor = pageColor
                 tints = emptyList()
                 blurRadius = BLUR_MAX

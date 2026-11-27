@@ -3700,9 +3700,8 @@ private fun BitChordApp(
                     TopFadeBlur(
                         hazeState = hazeState,
                         pageColor = chromePageColor,
-                        modifier = Modifier
-                            .align(Alignment.TopCenter)
-                            .graphicsLayer { alpha = topFadeAlpha },
+                        modifier = Modifier.align(Alignment.TopCenter),
+                        alpha = { topFadeAlpha },
                     )
                 }
 
