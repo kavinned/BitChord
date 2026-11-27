@@ -1608,7 +1608,7 @@ fun NowPlayingScreen(
     val heroIncomingStill = autoMixFrames?.incoming.takeIf {
         heroMode && pair?.liveOutgoing == true && !pair.liveIncoming
     }
-    fun coverLoaded() = autoMixFrames != null || art.loaded
+    fun coverLoaded() = autoMixFrames != null || art.hasVisibleCover
     // Sticky, unlike [PlayerArtwork.loaded]: the banner is the shape of the player rather
     // than a property of the track in it. Waiting on each new cover would
     // collapse the banner into a card and blow it back out on every skip —

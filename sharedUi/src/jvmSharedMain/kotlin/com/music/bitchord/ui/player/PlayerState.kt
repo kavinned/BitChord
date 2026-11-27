@@ -105,6 +105,10 @@ internal fun playerCoverRequest(context: PlatformContext, artworkUrl: String?): 
     ImageRequest.Builder(context).data(artworkUrl).size(ART_PX)
         .memoryCacheKeyExtra(PLAYER_ART_MEMORY_CACHE_KEY_EXTRA, ART_PX.toString())
 
+/** Remote covers can fail transiently; a missing local one never appears a second later. */
+internal fun isRetryableArtworkUrl(url: String?): Boolean =
+    !url.isNullOrBlank() && !url.startsWith("content://") && !url.startsWith("file://")
+
 /**
  * The player's cover: the one request every surface draws it from, whether it
  * has loaded, and the bounded retries after a failure.
@@ -146,6 +150,12 @@ internal class PlayerArtwork(
     /** Latched on an error, and only upwards — cleared by the retry itself. */
     internal var failed by mutableStateOf(false)
 
+    /** A local `content://` or `file://` cover that failed is missing for good; only remote ones are worth a retry. */
+    val retryable: Boolean = isRetryableArtworkUrl(url)
+
+    /** Nothing to show and nothing more to try: the placeholder is final, so no older cover may leak past it. */
+    val settledEmpty: Boolean get() = url == null || (failed && (!retryable || attempt >= ART_RETRIES))
+
     /** This cover's memory-cache entry, once it has been drawn. */
     private var shown: MemoryCache.Key? = null
     private var decodedCover: DecodedAutoMixCover? = null
@@ -168,7 +178,14 @@ internal class PlayerArtwork(
      * for as long as the decode took. That is longest for local files: a
      * MediaStore album-art URI has no disk cache to come from.
      */
-    val lastCover: MemoryCache.Key? get() = shown ?: holdOver
+    val lastCover: MemoryCache.Key? get() = if (settledEmpty) null else shown ?: holdOver
+
+    /**
+     * Whether a cover is on screen or standing in for this one while it loads.
+     * Unlike [loaded] it stays true over the hold-over, so the sleeve keeps its
+     * shadow and clip and the placeholder's music note stays hidden.
+     */
+    val hasVisibleCover: Boolean get() = loaded || (!failed && holdOver != null)
 
     /**
      * The one request for this cover, built once.
@@ -232,7 +249,7 @@ internal fun rememberPlayerArtwork(remoteArt: String?): PlayerArtwork {
         // A track with no artwork at all fails immediately and would fail
         // identically three more times: there is no request to make, so there is
         // nothing a second go could do differently.
-        if (artUrl == null || !art.failed || art.attempt >= ART_RETRIES) return@LaunchedEffect
+        if (!art.retryable || !art.failed || art.attempt >= ART_RETRIES) return@LaunchedEffect
         delay(ART_RETRY_DELAY_MS)
         art.retry()
     }
