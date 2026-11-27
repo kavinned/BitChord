@@ -677,6 +677,8 @@ object AppSettings {
 
     /** Restores the expanded player to the surface the listener left open. */
     val lastPlayerScreen = MutableStateFlow(LastPlayerScreen.MAIN)
+    /** Lyrics view the user last chose: ORIGINAL, ROMANIZED or TRANSLATED. */
+    val lyricsDisplayMode = MutableStateFlow("ORIGINAL")
 
     /**
      * Time-synced lyrics on the player, lit up as they are sung.
@@ -1184,6 +1186,7 @@ object AppSettings {
                 prefs.getString(KEY_LAST_PLAYER_SCREEN, null) ?: LastPlayerScreen.MAIN.name,
             )
         }.getOrDefault(LastPlayerScreen.MAIN)
+        lyricsDisplayMode.value = prefs.getString(KEY_LYRICS_DISPLAY_MODE, null) ?: "ORIGINAL"
         syncedLyrics.value = prefs.getBoolean(KEY_SYNCED_LYRICS, true)
         lyricsSources.value = readLyricsSources()
         lyricsSourceOrder.value = readLyricsSourceOrder()
@@ -1909,6 +1912,12 @@ object AppSettings {
         prefs.edit().putString(KEY_PLAYER_THEME, value.name).apply()
     }
 
+    fun setLyricsDisplayMode(mode: String) {
+        if (lyricsDisplayMode.value == mode) return
+        lyricsDisplayMode.value = mode
+        prefs.edit().putString(KEY_LYRICS_DISPLAY_MODE, mode).apply()
+    }
+
     fun setLastPlayerScreen(value: LastPlayerScreen) {
         if (lastPlayerScreen.value == value) return
         lastPlayerScreen.value = value
@@ -2545,6 +2554,7 @@ private const val MAX_DETAIL_SONG_SORTS = 200
     private const val KEY_PLAYER_THEME = "player_theme"
     private const val KEY_LEGACY_MESH_GRADIENT = "legacy_mesh_gradient"
     private const val KEY_LAST_PLAYER_SCREEN = "last_player_screen"
+    private const val KEY_LYRICS_DISPLAY_MODE = "lyrics_display_mode"
     private const val KEY_SYNCED_LYRICS = "synced_lyrics"
     private const val KEY_LYRICS_SOURCES = "lyrics_sources"
     private const val KEY_LYRICS_SOURCES_SEEN = "lyrics_sources_seen"
