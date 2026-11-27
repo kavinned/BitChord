@@ -118,11 +118,18 @@ fun PlaylistPickerSheet(
     offline: Boolean = false,
     headerTitle: String? = null,
     songs: List<Song> = emptyList(),
+    /** Playlists that already hold the track, ticked when the sheet opens. */
+    initialSelectedIds: Set<String> = emptySet(),
+    /**
+     * When set, the sheet edits membership: confirming hands over the playlists
+     * newly ticked and newly unticked instead of calling [onAdd].
+     */
+    onConfirmSelection: ((added: List<UserPlaylist>, removed: List<UserPlaylist>) -> Unit)? = null,
 ) {
     var creating by remember { mutableStateOf(startCreating) }
     // By id rather than by value: the list is re-fetched under an open sheet,
     // and a refreshed row must stay ticked.
-    var selected by remember { mutableStateOf(emptySet<String>()) }
+    var selected by remember(initialSelectedIds) { mutableStateOf(initialSelectedIds) }
     // Find a playlist: narrows the list as it's typed. Ticks on playlists it
     // hides are kept, so a search can't quietly drop one already chosen.
     var query by remember { mutableStateOf("") }
@@ -181,13 +188,28 @@ fun PlaylistPickerSheet(
                     leadingIcon = SfIcons.Close,
                     leadingDescription = stringResource(R.string.close),
                     onLeading = { closeAfter {} },
-                    confirmDescription = if (selected.isEmpty()) {
+                    confirmDescription = if (onConfirmSelection != null) {
+                        stringResource(R.string.playlists_updated)
+                    } else if (selected.isEmpty()) {
                         stringResource(R.string.add_to_playlist)
                     } else {
                         pluralStringResource(R.plurals.add_to_playlists_count, selected.size, selected.size)
                     },
-                    confirmEnabled = selected.isNotEmpty(),
-                    onConfirm = { closeAfter { onAdd(playlists.filter { it.playlistId in selected }) } },
+                    confirmEnabled = if (onConfirmSelection != null) {
+                        selected != initialSelectedIds
+                    } else {
+                        selected.isNotEmpty()
+                    },
+                    onConfirm = {
+                        closeAfter {
+                            if (onConfirmSelection != null) {
+                                val (added, removed) = diffPlaylistSelection(playlists, initialSelectedIds, selected)
+                                onConfirmSelection(added, removed)
+                            } else {
+                                onAdd(playlists.filter { it.playlistId in selected })
+                            }
+                        }
+                    },
                 )
                 if (songs.isNotEmpty()) {
                     Text(
@@ -268,6 +290,16 @@ fun PlaylistPickerSheet(
         }
     }
 }
+
+/** What confirming changed: playlists newly ticked, and playlists newly unticked. */
+internal fun diffPlaylistSelection(
+    playlists: List<UserPlaylist>,
+    initialIds: Set<String>,
+    finalIds: Set<String>,
+): Pair<List<UserPlaylist>, List<UserPlaylist>> = Pair(
+    playlists.filter { it.playlistId in finalIds && it.playlistId !in initialIds },
+    playlists.filter { it.playlistId in initialIds && it.playlistId !in finalIds },
+)
 
 /** Find a playlist: the search box over the picker's list. */
 @Composable

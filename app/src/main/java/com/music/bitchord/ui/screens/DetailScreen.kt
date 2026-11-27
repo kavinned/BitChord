@@ -285,6 +285,22 @@ private const val SVG_DECODE_WIDTH = 1600
 
 private val CREDIT_SEPARATOR = Regex(""",\s|\s&\s|\s(?:x|and|feat\.?|ft\.?|with)\s""", RegexOption.IGNORE_CASE)
 
+/**
+ * LazyColumn item index of [currentSong] inside [matches], shifted by the
+ * [headerItemCount] rows above the track list (header, optional search bar,
+ * optional about section). Null when the track is not in [matches].
+ */
+internal fun locatePlayingSongIndex(
+    matches: List<IndexedValue<Song>>,
+    currentSong: Song?,
+    headerItemCount: Int,
+): Int? {
+    if (currentSong == null || matches.isEmpty()) return null
+    val isCurrent = playingRowMatcher(matches.map { it.value }, currentSong)
+    val idx = matches.indexOfFirst { isCurrent(it.value) }
+    return if (idx >= 0) headerItemCount + idx else null
+}
+
 /** Whether this reads as several artists credited together rather than one name. */
 private fun String.looksLikeCredit() = CREDIT_SEPARATOR.containsMatchIn(this)
 
@@ -380,6 +396,10 @@ fun DetailScreen(
      * is a no-op while one is running.
      */
     onResumeFillIn: () -> Unit = {},
+    /** Incremented by the top-bar Locate button to scroll to [currentSong]. */
+    locateRequest: Int = 0,
+    /** Called when Locate has to wait for [DetailPage.continuation] to load the track. */
+    onLocating: () -> Unit = {},
 ) {
     val rawSongs = (page.songs as? UiState.Success)?.data.orEmpty()
     // A folder keeps its own sort — the one its top bar menu sets — rather
@@ -555,6 +575,38 @@ fun DetailScreen(
         }
     }
 
+    val description = page.description
+    val hasStats = isArtist &&
+        (page.subscriberCountText != null || page.monthlyListenerCount != null)
+    // The header holds Apple's logo here, so the ink goes at the foot of the page instead.
+    val aboutSignature = if (isArtist && appleArt?.logoUrl != null) signature else null
+    val showAbout = (!description.isNullOrBlank() &&
+        (page.type == BrowseType.ALBUM || isArtist)) || hasStats || aboutSignature != null
+    val headerItemCount = 1 + (if (searching) 1 else 0) + (if (!isArtist && showAbout) 1 else 0)
+
+    var pendingLocate by remember(page.browseId) { mutableStateOf(false) }
+    LaunchedEffect(locateRequest) {
+        if (locateRequest == 0) return@LaunchedEffect
+        val targetIndex = locatePlayingSongIndex(matches, currentSong, headerItemCount)
+        if (targetIndex != null) {
+            pendingLocate = false
+            listState.animateScrollToItem(targetIndex, -searchStop)
+        } else if (page.continuation != null && currentSong?.playbackSourceId == page.browseId) {
+            pendingLocate = true
+            onLocating()
+        }
+    }
+    LaunchedEffect(matches, page.continuation, pendingLocate, headerItemCount) {
+        if (!pendingLocate) return@LaunchedEffect
+        val targetIndex = locatePlayingSongIndex(matches, currentSong, headerItemCount)
+        if (targetIndex != null) {
+            pendingLocate = false
+            listState.animateScrollToItem(targetIndex, -searchStop)
+        } else if (page.continuation == null) {
+            pendingLocate = false
+        }
+    }
+
     AnimatedContent(
         targetState = activeShelf,
         transitionSpec = {
@@ -645,8 +697,6 @@ fun DetailScreen(
                 }
             }
 
-            val description = page.description
-
             if (songs.isNotEmpty() && isArtist) {
                 item(key = "actions") {
                     ActionRow(
@@ -685,12 +735,6 @@ fun DetailScreen(
             // than sitting between the action row and the songs.
             // The artist's counts close it, under the text, so a page whose blurb is
             // empty still gets the section for them.
-            val hasStats = isArtist &&
-                (page.subscriberCountText != null || page.monthlyListenerCount != null)
-            // The header holds Apple's logo here, so the ink goes at the foot of the page instead.
-            val aboutSignature = if (isArtist && appleArt?.logoUrl != null) signature else null
-            val showAbout = (!description.isNullOrBlank() &&
-                (page.type == BrowseType.ALBUM || isArtist)) || hasStats || aboutSignature != null
             fun LazyListScope.aboutItem() {
                 if (!showAbout) return
                 item(key = "about") {

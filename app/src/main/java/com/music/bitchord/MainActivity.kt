@@ -74,6 +74,7 @@ import androidx.compose.material.icons.rounded.CloudOff
 import androidx.compose.material.icons.rounded.History
 import androidx.compose.material.icons.rounded.IosShare
 import androidx.compose.material.icons.rounded.MoreHoriz
+import androidx.compose.material.icons.rounded.MyLocation
 import androidx.compose.material.icons.rounded.Person
 import androidx.compose.material.icons.rounded.Sort
 import androidx.compose.material.icons.rounded.Upgrade
@@ -298,6 +299,7 @@ import com.music.bitchord.ui.components.QueueActionNotice
 import com.music.bitchord.ui.components.QueueActionNoticeHost
 import com.music.bitchord.ui.components.shouldAutoDismissQueueActionNotice
 import com.music.bitchord.ui.removablePlaylistId
+import com.music.bitchord.ui.screens.locatePlayingSongIndex
 import com.music.bitchord.ui.components.TopBarAccountButton
 import com.music.bitchord.ui.screens.SegmentedControl
 import com.music.bitchord.ui.components.SearchField
@@ -997,6 +999,7 @@ private fun BitChordApp(
     // sort control because the button that opens it sits in the top bar beside
     // it, and reset with the page so a filter never follows you to the next one.
     var detailSearching by rememberSaveable(topDetail?.browseId) { mutableStateOf(false) }
+    var detailLocateRequest by remember(topDetail?.browseId) { mutableIntStateOf(0) }
     val likeStatuses by viewModel.likeStatuses.collectAsStateWithLifecycle()
     // A device file's heart is the device's Liked playlist, not a YouTube
     // rating: the file has no identity there to rate. One rule for every
@@ -3214,6 +3217,8 @@ private fun BitChordApp(
                                 // search button; one fading out keeps its list whole.
                                 searching = detailSearching && page.browseId == detail?.browseId,
                                 onSearchingChange = { detailSearching = it },
+                                locateRequest = if (page.browseId == detail?.browseId) detailLocateRequest else 0,
+                                onLocating = { showQueueNotice(context.getString(R.string.locating_track)) },
                                 onArtistClick = { id, name ->
                                     viewModel.openDetail(id, name, "Artist", null, BrowseType.ARTIST)
                                 },
@@ -3941,6 +3946,27 @@ private fun BitChordApp(
                             // Shuffle / Play / Add.
                             if ((isReleaseDetail || isLocalDetail) && detail != null) {
                                 val releaseSongs = (detail.songs as? UiState.Success)?.data.orEmpty()
+                                val playingSong = player.song
+                                val canLocate = isReleaseDetail &&
+                                    detail.type == BrowseType.PLAYLIST &&
+                                    playingSong != null &&
+                                    (
+                                        locatePlayingSongIndex(
+                                            releaseSongs.withIndex().toList(),
+                                            playingSong,
+                                            headerItemCount = 0,
+                                        ) != null ||
+                                            (detail.continuation != null && playingSong.playbackSourceId == detail.browseId)
+                                    )
+                                if (canLocate) {
+                                    IconButton(onClick = { detailLocateRequest += 1 }) {
+                                        Icon(
+                                            Icons.Rounded.MyLocation,
+                                            contentDescription = stringResource(R.string.locate_current_track),
+                                            tint = MaterialTheme.colorScheme.onSurface,
+                                        )
+                                    }
+                                }
                                 if (releaseSongs.isNotEmpty()) {
                                     IconButton(onClick = { detailSearching = !detailSearching }) {
                                         Icon(
@@ -5388,6 +5414,14 @@ private fun BitChordApp(
                     )
                 }
             }
+            // Device playlists are in memory, so membership is known now: the
+            // ones already holding the track open ticked, and unticking removes.
+            val heldBy = remember(offlinePlaylists, target) {
+                val key = target?.localUri
+                if (key == null) emptySet() else offlinePlaylists
+                    .filter { playlist -> playlist.songs.any { it.localUri == key } }
+                    .mapTo(HashSet()) { it.id }
+            }
             PlaylistPickerSheet(
                 playlists = choices,
                 loading = false,
@@ -5395,6 +5429,16 @@ private fun BitChordApp(
                 startCreating = target == null,
                 offline = true,
                 onDismiss = dismiss,
+                initialSelectedIds = heldBy,
+                onConfirmSelection = target?.let { song ->
+                    { added, removed ->
+                        if (added.isNotEmpty()) {
+                            OfflinePlaylists.add(added.mapTo(HashSet()) { it.playlistId }, listOf(song))
+                        }
+                        removed.forEach { OfflinePlaylists.remove(it.playlistId, song) }
+                        showQueueNotice(context.getString(R.string.playlists_updated))
+                    }
+                },
                 onAdd = { picked ->
                     target?.let { song ->
                         val result = OfflinePlaylists.add(picked.mapTo(HashSet()) { it.playlistId }, listOf(song))
