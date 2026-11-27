@@ -481,6 +481,12 @@ data class ShelfItem(
      * picture the player can show. Drawn as a 16:9 card, as the web player does.
      */
     val isVideo: Boolean = false,
+    /**
+     * The artist(s) read off the subtitle's own artist links, which holds in
+     * every language; null where the card links none. Prefer it over parsing
+     * [subtitle], whose type labels and tallies are localized.
+     */
+    val artist: String? = null,
 )
 
 /**

@@ -737,7 +737,7 @@ object InnertubeParser {
         // A track row on an album lists its play count where a search row
         // lists the artist, so a segment that reads as a tally is no credit.
         val artist = parts.firstOrNull {
-            !it.matches(DURATION) && it.lowercase(Locale.ROOT) !in TYPE_WORDS && !it.matches(TALLY)
+            !it.matches(DURATION) && it.lowercase(Locale.ROOT) !in TYPE_WORDS && !looksLikeTally(it)
         }
 
         // The artist/album names in the subtitle carry browse endpoints; pull
@@ -887,7 +887,7 @@ object InnertubeParser {
         val credits = creditsOf(subtitleRuns)
         val creditedArtists = artistNamesFromRuns(subtitleRuns)
         val artist = parts.firstOrNull {
-            !it.matches(DURATION) && it.lowercase(Locale.ROOT) !in TYPE_WORDS && !it.matches(TALLY)
+            !it.matches(DURATION) && it.lowercase(Locale.ROOT) !in TYPE_WORDS && !looksLikeTally(it)
         }
         val thumbnails = renderer.o("thumbnail").o("musicThumbnailRenderer")
             .o("thumbnail").a("thumbnails")
@@ -1110,9 +1110,11 @@ object InnertubeParser {
         // separate sentences, and running them together would weld the artist
         // onto the word that says this is a release at all.
         val parts = lines.flatMap { line ->
-            line.joinToString("") { it.s("text").orEmpty() }.split(" • ", " · ").map(String::trim)
+            line.joinToString("") { it.s("text").orEmpty() }.split(SEPARATOR).map(String::trim)
         }
-        if (parts.none { it.lowercase(Locale.ROOT) in RELEASE_WORDS }) return Credits()
+        // A strapline that links an artist is a release whatever language it is billed in.
+        val artistStrapline = lines.firstOrNull()?.let(::artistNamesFromRuns) != null
+        if (!artistStrapline && parts.none { it.lowercase(Locale.ROOT) in RELEASE_WORDS }) return Credits()
 
         val credits = creditsOf(lines.flatten())
         val creditedArtists = lines.firstNotNullOfOrNull(::artistNamesFromRuns)
@@ -1120,7 +1122,7 @@ object InnertubeParser {
         // An artist YouTube has no page for is named in the same line without
         // a link to follow, leaving the name as the only thing to go on.
         val name = parts.firstOrNull {
-            it.isNotBlank() && it.lowercase(Locale.ROOT) !in TYPE_WORDS && !it.matches(TALLY) &&
+            it.isNotBlank() && it.lowercase(Locale.ROOT) !in TYPE_WORDS && !looksLikeTally(it) &&
                 !it.matches(YEAR) && !it.matches(DURATION)
         }
         return credits.copy(artistName = name)
@@ -1709,8 +1711,13 @@ object InnertubeParser {
             videoId = videoId,
             browseId = resolvedBrowseId,
             isVideo = isVideo,
+            artist = artistNamesFromRuns(renderer.o("subtitle").a("runs").orEmpty()),
         )
     }
+
+    /** A card's artist: its linked artist runs, else the subtitle's best guess. */
+    fun artistOf(item: ShelfItem): String =
+        item.artist?.takeIf { it.isNotBlank() } ?: artistFromSubtitle(item.subtitle)
 
     /**
      * The credit out of a shelf card's subtitle, which reads "Song • Chelsea
@@ -1722,9 +1729,9 @@ object InnertubeParser {
      * subtitle, so a "Song" or "Single" heading drops out the same way.
      */
     fun artistFromSubtitle(subtitle: String): String {
-        val parts = subtitle.split(" • ").map(String::trim).filter { it.isNotBlank() }
+        val parts = subtitle.split(SEPARATOR).map(String::trim).filter { it.isNotBlank() }
         return parts.firstOrNull {
-            it.lowercase() !in TYPE_WORDS && !it.matches(TALLY) && !it.matches(DURATION)
+            it.lowercase(Locale.ROOT) !in TYPE_WORDS && !looksLikeTally(it) && !it.matches(DURATION)
         } ?: subtitle
     }
 
@@ -1757,21 +1764,70 @@ object InnertubeParser {
      * counting one of the words YouTube counts with.
      */
     private val TALLY = Regex(
-        """[\d.,]+\s*[KMB]?\s+(plays|views|likes|songs|tracks|subscribers|""" +
-            """hours?|minutes?|seconds?)\b.*""",
+        """[\d.,]+\s*[\p{L}.]{0,4}\s+(?:(?:de|of|von|di|do|da)\s+)?(?:plays|views|likes|songs|tracks|""" +
+            """subscribers|hours?|minutes?|seconds?|""" +
+            // es, pt, it, fr, de, pl, tr, id, vi, ru, uk
+            """reproducciones|visualizaciones|vistas|canciones|temas|suscriptores|horas?|minutos?|segundos?|""" +
+            """reprodu[cç][õo]es|visualiza[cç][õo]es|músicas|inscritos|""" +
+            """riproduzioni|visualizzazioni|brani|iscritti|ore|minuti|secondi|""" +
+            """lectures|vues|titres|abonnés|heures?|""" +
+            """wiedergaben|aufrufe|abonnenten|stunden?|std|minuten|sekunden|""" +
+            """odtworzeń|wyświetleń|utworów|subskrybentów|godz|""" +
+            """dinlenme|görüntülenme|şarkı|abone|saat|dakika|saniye|""" +
+            """kali diputar|x ditonton|lagu|pelanggan|jam|menit|detik|""" +
+            """lượt phát|lượt xem|bài hát|người đăng ký|""" +
+            """прослушиваний|прослушивания|прослушивание|просмотров|просмотра|просмотр|песен|песни|песня|""" +
+            """треков|трека|трек|подписчиков|подписчика|подписчик|часов|часа|час|минут[ы]?|минута|секунд[ы]?|""" +
+            """прослуховувань|переглядів|пісень|підписників|годин[и]?|хвилин[и]?)(?![\p{L}]).*""",
         RegexOption.IGNORE_CASE,
     )
+    /** East Asian counts, which sit against the number with no space: "12万回視聴". */
+    private val TALLY_CJK = Regex(
+        """(?:[\d.,]+\s*\p{L}{0,2}\s*(?:回視聴|回再生|次观看|次觀看|次播放|曲|首|分钟|分鐘|分|時間|小时|小時)|""" +
+            """(?:조회수|재생수)\s*[\d.,]+.*|[\d.,]+\s*\p{L}{0,2}\s*(?:회|곡|분|시간))""",
+    )
+    /** Whether a subtitle segment counts something rather than naming someone. */
+    fun looksLikeTally(segment: String): Boolean =
+        segment.matches(TALLY) || segment.matches(TALLY_CJK)
+
+    /** Subtitle segments divide on a bullet or a middle dot. */
+    private val SEPARATOR = Regex("""\s*[•·]\s*""")
     /** Header words that mark a page as a release, whose rows share its credit. */
-    private val RELEASE_WORDS = setOf("album", "single", "ep")
+    val RELEASE_WORDS = setOf(
+        "album", "single", "ep",
+        "álbum", "sencillo", // es, pt
+        "альбом", "сингл", // ru, uk
+        "singolo", "singiel", "albüm", "đĩa đơn",
+        "アルバム", "シングル", "앨범", "싱글", "专辑", "專輯", "单曲", "單曲",
+        "อัลบั้ม", "ซิงเกิล", "एल्बम", "सिंगल", "ألبوم", "سينغل", "אלבום", "סינגל",
+    )
     private val HEADER_RENDERERS = listOf(
         "musicResponsiveHeaderRenderer",
         "musicDetailHeaderRenderer",
     )
     /** Header lines that name the artist, in either header shape. */
     private val HEADER_CREDIT_LINES = listOf("straplineTextOne", "subtitle")
-    private val TYPE_WORDS = setOf(
-        "song", "video", "album", "single", "ep", "artist",
-        "playlist", "podcast", "episode",
+    /** Labels YouTube Music prints for what a thing is, in every app language. */
+    val TYPE_WORDS = RELEASE_WORDS + setOf(
+        "song", "video", "artist", "playlist", "podcast", "episode",
+        "canción", "vídeo", "lista", "artista", "episodio", "lista de reproducción", // es
+        "canzone", "brano", "playlist", "episódio", "música", "lista de reprodução", // it, pt
+        "композиция", "песня", "видео", "видеоклип", "плейлист", "исполнитель", // ru
+        "подкаст", "выпуск", "эпизод",
+        "композиція", "пісня", "відео", "виконавець", "випуск", "епізод", // uk
+        "lied", "künstler", "wiedergabeliste", "folge", // de
+        "titre", "chanson", "vidéo", "artiste", "épisode", // fr
+        "utwór", "piosenka", "teledysk", "wideo", "wykonawca", "playlista", "odcinek", // pl
+        "şarkı", "sanatçı", "oynatma listesi", "bölüm", // tr
+        "lagu", "artis", // id
+        "bài hát", "nghệ sĩ", "danh sách phát", "tập", // vi
+        "เพลง", "วิดีโอ", "ศิลปิน", "เพลย์ลิสต์", "พอดแคสต์", "ตอน", // th
+        "गाना", "वीडियो", "कलाकार", "प्लेलिस्ट", "पॉडकास्ट", "एपिसोड", // hi
+        "曲", "ソング", "動画", "ビデオ", "アーティスト", "プレイリスト", "ポッドキャスト", "エピソード", // ja
+        "노래", "동영상", "아티스트", "재생목록", "팟캐스트", "에피소드", // ko
+        "歌曲", "视频", "影片", "艺人", "藝人", "播放列表", "播客", "单集", // zh
+        "أغنية", "فيديو", "فنان", "قائمة تشغيل", "بودكاست", "حلقة", // ar
+        "שיר", "סרטון", "אמן", "פלייליסט", "פודקאסט", "פרק", // he
     )
     /**
      * Flags a browse card as video content: "50 videos" in a subtitle

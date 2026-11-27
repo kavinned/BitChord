@@ -2465,10 +2465,7 @@ private fun ArtistShelfGridPage(
  */
 @Composable
 private fun DetailPage.headerLines(trackCount: Int, playtime: String? = null): Pair<String, String> {
-    val parts = subtitle.split("•", "·").map { it.trim() }.filter { it.isNotEmpty() }
-    val year = parts.lastOrNull { it.length == 4 && it.all(Char::isDigit) }
-    val kind = parts.firstOrNull { it.lowercase(Locale.ROOT) in KIND_WORDS }
-    val credit = parts.filter { it != year && it != kind }.joinToString(", ")
+    val (credit, year, kind) = splitDetailSubtitle(subtitle)
     // Title case, "Playlist · 2022 · 10 Tracks · 38 min" — except the
     // playtime, whose "min" and "1h 25m" are units, not words.
     // An artist grouped out of a device folder is a plain track list, not an
@@ -2506,10 +2503,17 @@ private fun String.capitalizeWords(): String =
         word.replaceFirstChar { it.titlecase(Locale.getDefault()) }
     }
 
-/** Subtitle words that name what a page *is* rather than who made it. */
-private val KIND_WORDS = setOf(
-    "album", "single", "ep", "playlist", "artist", "podcast", "episode", "song", "video",
-)
+/**
+ * A page subtitle as (credit, year, kind). The kind is whichever segment is a
+ * localized type label ([InnertubeParser.TYPE_WORDS]) — what a page *is*
+ * rather than who made it.
+ */
+internal fun splitDetailSubtitle(subtitle: String): Triple<String, String?, String?> {
+    val parts = subtitle.split("•", "·").map { it.trim() }.filter { it.isNotEmpty() }
+    val year = parts.lastOrNull { it.length == 4 && it.all(Char::isDigit) }
+    val kind = parts.firstOrNull { it.lowercase(Locale.ROOT) in com.music.bitchord.data.innertube.InnertubeParser.TYPE_WORDS }
+    return Triple(parts.filter { it != year && it != kind }.joinToString(", "), year, kind)
+}
 
 @Composable
 private fun BrowseType.localizedLabel(): String? = when (this) {

@@ -718,4 +718,70 @@ class SearchPagingTest {
 
         assertEquals(listOf("PLROAD"), playlists.map { it.playlistId })
     }
+
+    @Test
+    fun `artistFromSubtitle skips Spanish and Russian type labels and tallies`() {
+        assertEquals("Ken Carson", InnertubeParser.artistFromSubtitle("Álbum • Ken Carson • 2023"))
+        assertEquals("Ken Carson", InnertubeParser.artistFromSubtitle("Canción • Ken Carson • 12 M de reproducciones"))
+        assertEquals("Miyagi", InnertubeParser.artistFromSubtitle("Композиция • Miyagi • 1,2 млн прослушиваний"))
+        assertEquals("21 Savage", InnertubeParser.artistFromSubtitle("Song • 21 Savage • 50M plays"))
+        assertEquals("50 Cent", InnertubeParser.artistFromSubtitle("Canción • 50 Cent"))
+        assertEquals("Miyagi", InnertubeParser.artistFromSubtitle("Композиция · Miyagi"))
+    }
+
+    @Test
+    fun `detail subtitle strips localized album kind words`() {
+        val (credit, year, kind) = com.music.bitchord.ui.screens.splitDetailSubtitle("Ken Carson • Álbum • 2023")
+        assertEquals("Ken Carson", credit)
+        assertEquals("2023", year)
+        assertEquals("Álbum", kind)
+    }
+
+    @Test
+    fun `two row card takes its artist from the linked runs in any language`() {
+        val json = """
+        { "items": [{ "musicTwoRowItemRenderer": {
+          "title": { "runs": [{ "text": "A Great Chaos" }] },
+          "navigationEndpoint": { "browseEndpoint": { "browseId": "MPREb_test" } },
+          "subtitle": { "runs": [
+            { "text": "Álbum" },
+            { "text": " • " },
+            { "text": "Ken Carson", "navigationEndpoint": { "browseEndpoint": {
+              "browseId": "UC1",
+              "browseEndpointContextSupportedConfigs": { "browseEndpointContextMusicConfig": {
+                "pageType": "MUSIC_PAGE_TYPE_ARTIST" } } } } }
+          ] }
+        } }] }
+        """
+        val item = InnertubeParser.parseLibraryItems(Json.parseToJsonElement(json)).single()
+        assertEquals("Ken Carson", item.artist)
+        assertEquals("Ken Carson", InnertubeParser.artistOf(item))
+    }
+
+    @Test
+    fun `localized album header credits its tracks in Spanish and Russian`() {
+        val json = """
+        {
+          "header": { "musicResponsiveHeaderRenderer": {
+            "subtitle": { "runs": [
+              { "text": "Альбом" },
+              { "text": " • " },
+              { "text": "Miyagi" },
+              { "text": " • " },
+              { "text": "2023" }
+            ] }
+          } },
+          "contents": [{ "musicResponsiveListItemRenderer": {
+            "playlistItemData": { "videoId": "ru-track-1" },
+            "flexColumns": [
+              { "musicResponsiveListItemFlexColumnRenderer": {
+                "text": { "runs": [{ "text": "Track One" }] }
+              } }
+            ]
+          } }]
+        }
+        """
+        val song = InnertubeParser.collectSongsDeep(Json.parseToJsonElement(json)).single()
+        assertEquals("Miyagi", song.artist)
+    }
 }

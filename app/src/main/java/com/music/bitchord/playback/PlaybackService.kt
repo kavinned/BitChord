@@ -11045,7 +11045,7 @@ class PlaybackService : MediaLibraryService() {
             val song = Song(
                 videoId = vid,
                 title = title,
-                artist = InnertubeParser.artistFromSubtitle(subtitle),
+                artist = InnertubeParser.artistOf(this),
                 thumbnailUrl = thumbnailUrl,
             )
             songCache[vid] = song
@@ -11075,7 +11075,7 @@ class PlaybackService : MediaLibraryService() {
         return Song(
             videoId = id,
             title = title,
-            artist = InnertubeParser.artistFromSubtitle(subtitle),
+            artist = InnertubeParser.artistOf(this),
             thumbnailUrl = thumbnailUrl,
         )
     }
