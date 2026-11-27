@@ -1597,4 +1597,5 @@
     <string name="replay_year_summary_minutes">聆聽分鐘數</string>
     <string name="replay_year_mute">靜音播放</string>
     <string name="replay_year_unmute">取消靜音</string>
+    <string name=removed_from_playlist>Removed from playlist</string>
 </resources>

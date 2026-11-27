@@ -1603,4 +1603,5 @@
     <string name="replay_year_summary_minutes">นาทีที่ฟัง</string>
     <string name="replay_year_mute">ปิดเสียงสตอรี</string>
     <string name="replay_year_unmute">เปิดเสียงสตอรี</string>
+    <string name=removed_from_playlist>Removed from playlist</string>
 </resources>

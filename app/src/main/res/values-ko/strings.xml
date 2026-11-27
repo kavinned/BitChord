@@ -1470,4 +1470,5 @@
     <string name="replay_year_summary_minutes">감상 시간(분)</string>
     <string name="replay_year_mute">스토리 음소거</string>
     <string name="replay_year_unmute">스토리 음소거 해제</string>
+    <string name=removed_from_playlist>Removed from playlist</string>
 </resources>

@@ -1597,4 +1597,5 @@
     <string name="replay_year_summary_minutes">Menit didengarkan</string>
     <string name="replay_year_mute">Bisukan cerita</string>
     <string name="replay_year_unmute">Suarakan cerita</string>
+    <string name=removed_from_playlist>Removed from playlist</string>
 </resources>

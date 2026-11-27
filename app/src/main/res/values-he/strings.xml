@@ -1636,4 +1636,5 @@
     <string name="replay_year_summary_minutes">דקות האזנה</string>
     <string name="replay_year_mute">השתק סיפור</string>
     <string name="replay_year_unmute">בטל השתקת סיפור</string>
+    <string name=removed_from_playlist>Removed from playlist</string>
 </resources>

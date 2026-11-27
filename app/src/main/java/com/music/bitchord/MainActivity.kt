@@ -297,6 +297,7 @@ import com.music.bitchord.ui.components.MiniPlayer
 import com.music.bitchord.ui.components.QueueActionNotice
 import com.music.bitchord.ui.components.QueueActionNoticeHost
 import com.music.bitchord.ui.components.shouldAutoDismissQueueActionNotice
+import com.music.bitchord.ui.removablePlaylistId
 import com.music.bitchord.ui.components.TopBarAccountButton
 import com.music.bitchord.ui.screens.SegmentedControl
 import com.music.bitchord.ui.components.SearchField
@@ -4379,8 +4380,19 @@ private fun BitChordApp(
             // "Remove from this playlist" is only a sentence on a playlist
             // page the account can actually edit, and only for a row that
             // carries the per-entry id a removal is expressed in.
-            val editable = viewModel.editablePlaylist(detail?.browseId)
-                ?.takeIf { !fromPlayer && song.setVideoId != null }
+            // Where a removal would act: the open page, or from Now Playing
+            // the playlist the queue came from (never an Autoplay row).
+            val removeTargetId = removablePlaylistId(song, detail?.browseId, fromPlayer)
+            // Ownership is only known once asked; ask as the player's menu
+            // is about to need it, and re-read the answer when it lands.
+            val ownedPlaylists by viewModel.playlistOwned.collectAsStateWithLifecycle()
+            LaunchedEffect(removeTargetId, fromPlayer) {
+                if (fromPlayer && removeTargetId?.startsWith("VL") == true) {
+                    viewModel.resolvePlaylistOwnership(removeTargetId)
+                }
+            }
+            val editable = viewModel.editablePlaylist(removeTargetId)
+                ?.takeIf { ownedPlaylists[removeTargetId] == true && (fromPlayer || song.setVideoId != null) }
             // Asked of the cache's index off the main thread as the menu opens,
             // so "Remove from cache" is only offered for a track it holds.
             // Re-asked when the cache changes, which is what drops the row
@@ -4453,22 +4465,30 @@ private fun BitChordApp(
                 onRemoveFromPlaylist = editable?.let {
                     {
                         songActions = null
-                        viewModel.removeFromPlaylist(it.browseId, song)
+                        viewModel.removeFromPlaylist(it.browseId, song) { ok ->
+                            showQueueNotice(
+                                context.getString(
+                                    if (ok) R.string.removed_from_playlist else R.string.remove_from_playlist_failed,
+                                ),
+                            )
+                        }
                     }
-                } ?: detail?.browseId
-                    ?.takeIf { !fromPlayer && song.localUri != null && OfflinePlaylists.isOfflinePlaylist(it) }
+                } ?: removeTargetId
+                    ?.takeIf { song.localUri != null && OfflinePlaylists.isOfflinePlaylist(it) }
                     ?.let { id ->
                         {
                             songActions = null
                             OfflinePlaylists.remove(id, song)
+                            showQueueNotice(context.getString(R.string.removed_from_playlist))
                         }
-                    } ?: detail?.browseId
-                    ?.takeIf { id -> !fromPlayer && localPlaylists.any { it.browseId == id } }
+                    } ?: removeTargetId
+                    ?.takeIf { id -> localPlaylists.any { it.browseId == id } }
                     ?.let { id ->
                         {
                             songActions = null
                             com.music.bitchord.data.spotify.LocalPlaylistStore.removeSong(id, song)
                             viewModel.reloadLocalDetail(id)
+                            showQueueNotice(context.getString(R.string.removed_from_playlist))
                         }
                     },
                 onRemoveFromCache = if (inCache) {

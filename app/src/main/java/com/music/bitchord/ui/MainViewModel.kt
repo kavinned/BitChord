@@ -1343,11 +1343,29 @@ class MainViewModel(
      * Drops [song] from the playlist page it is being read on, and takes the
      * row out from under the reader rather than waiting for a re-fetch.
      */
-    fun removeFromPlaylist(browseId: String, song: Song) {
-        val setVideoId = song.setVideoId ?: return
-        if (!requireSignIn()) return
+    fun removeFromPlaylist(browseId: String, song: Song, onResult: ((Boolean) -> Unit)? = null) {
+        if (!requireSignIn()) {
+            onResult?.invoke(false)
+            return
+        }
         val playlistId = browseId.removePrefix("VL")
         viewModelScope.launch {
+            // A restored or version-swapped track has lost its slot id: find
+            // it on the open page, else in a fresh read of the playlist.
+            val setVideoId = song.setVideoId
+                ?: _detailStack.value.firstNotNullOfOrNull { page ->
+                    if (page.browseId != browseId) return@firstNotNullOfOrNull null
+                    (page.songs as? UiState.Success)?.data
+                        ?.firstOrNull { it.videoId == song.videoId && it.setVideoId != null }
+                        ?.setVideoId
+                }
+                ?: YtMusicRepository.playlistEntries(browseId).getOrNull()
+                    ?.firstOrNull { it.videoId == song.videoId }
+                    ?.setVideoId
+            if (setVideoId == null) {
+                onResult?.invoke(false)
+                return@launch
+            }
             YtMusicRepository.removeFromPlaylist(
                 playlistId,
                 listOf(setVideoId to song.videoId),
@@ -1366,8 +1384,9 @@ class MainViewModel(
                             )
                         }
                     }
+                    onResult?.invoke(true)
                 },
-                onFailure = {},
+                onFailure = { onResult?.invoke(false) },
             )
         }
     }
@@ -3964,6 +3983,18 @@ internal suspend fun <T : Any> retryingOrNull(waitsMs: LongArray, attempt: suspe
  * the syllable preference pick a different answer from the same providers, so
  * a change in either is a new lookup, as switching a source on or off is.
  */
+/**
+ * The playlist a "Remove from playlist" row would act on. In a song menu on a
+ * playlist page that is the page; from Now Playing it is the playlist the
+ * queue was started from — never for an Autoplay row, which inherits its
+ * seed's source without being in it.
+ */
+internal fun removablePlaylistId(song: Song, detailBrowseId: String?, fromPlayer: Boolean): String? {
+    if (!fromPlayer) return detailBrowseId
+    if (song.fromAutoplay || song.playbackSourceType != com.music.bitchord.data.model.PlaybackSourceType.BROWSE) return null
+    return song.playbackSourceId
+}
+
 internal fun lyricsLookupKey(
     videoId: String,
     sources: Set<LyricsSource>,

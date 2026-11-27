@@ -1678,4 +1678,5 @@
     <string name="replay_year_summary_minutes">Minuty słuchania</string>
     <string name="replay_year_mute">Wycisz relację</string>
     <string name="replay_year_unmute">Włącz dźwięk relacji</string>
+    <string name=removed_from_playlist>Removed from playlist</string>
 </resources>
