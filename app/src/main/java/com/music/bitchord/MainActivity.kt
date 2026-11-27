@@ -3272,6 +3272,7 @@ private fun BitChordApp(
                                 } else {
                                     null
                                 },
+                                onResumeFillIn = { viewModel.resumeFillIn(page.browseId) },
                             )
                         } else when ((destination as? AppDestination.Tab)?.index ?: selectedTab) {
                             TAB_HOME -> HomeScreen(

@@ -599,7 +599,12 @@ object InnertubeParser {
         // action, with no `continuationContents` at all: the shape a long
         // playlist's second page now has. Read as nothing, a reorder saw only
         // the first 100 rows (#947).
-        val appended = root.a("onResponseReceivedActions")?.firstNotNullOfOrNull { it.o("appendContinuationItemsAction") }
+        // More than one action can carry rows; reading only the first dropped
+        // the rest of a long playlist's page (#1651).
+        val appended: JsonElement? = root.a("onResponseReceivedActions")
+            ?.mapNotNull { it.o("appendContinuationItemsAction") }
+            ?.takeIf { it.isNotEmpty() }
+            ?.let(::JsonArray)
         val scope: JsonElement = root.o("continuationContents")
             ?: appended
             ?: root.o("contents").o("twoColumnBrowseResultsRenderer").o("secondaryContents")
@@ -615,7 +620,9 @@ object InnertubeParser {
         val songs = playlistScope?.let { playlist ->
             collectRenderers(playlist, "musicResponsiveListItemRenderer")
                 .mapNotNull { parseResponsiveListItem(it, pageCredit) }
-                .distinctBy { it.videoId }
+                // The same video can sit in a playlist twice; each row has its
+                // own setVideoId, so that, not videoId, is the entry's identity.
+                .distinctBy { it.setVideoId ?: it.videoId }
         }.orEmpty()
         val knownSongs = songs.mapTo(HashSet()) { it.videoId }
         val suggested = suggestionShelves
@@ -627,7 +634,13 @@ object InnertubeParser {
         // batch rather than paging it (see its "Refresh" button, wired to a
         // `reloadContinuationData` token). Only the playlist shelf's own
         // continuation means more real tracks.
-        val token = playlistScope?.let { continuationToken(it) }
+        // The last renderer is the tail one that pages on; a leading one in
+        // the same scope must not shadow it.
+        val token = playlistScope?.let { playlist ->
+            collectRenderers(playlist, "continuationItemRenderer").asReversed()
+                .firstNotNullOfOrNull(::rendererToken)
+                ?: continuationToken(playlist)
+        }
         return PlaylistShelfPage(songs, suggested, token)
     }
 
@@ -678,14 +691,19 @@ object InnertubeParser {
      * found anywhere deeper may page a different shelf than the one asked for.
      */
     fun continuationToken(root: JsonElement): String? {
-        val endpoint = collectRenderers(root, "continuationItemRenderer").firstOrNull()
-            .o("continuationEndpoint")
-        (endpoint.o("continuationCommand")
+        collectRenderers(root, "continuationItemRenderer").firstOrNull()
+            ?.let(::rendererToken)
+            ?.let { return it }
+        return collectRenderers(root, "nextContinuationData").firstOrNull().s("continuation")
+    }
+
+    private fun rendererToken(renderer: JsonObject): String? {
+        val endpoint = renderer.o("continuationEndpoint")
+        return (endpoint.o("continuationCommand")
             ?: endpoint.o("commandExecutorCommand").a("commands")
                 ?.firstNotNullOfOrNull { it.o("continuationCommand") })
             .s("token")
-            ?.let { return it }
-        return collectRenderers(root, "nextContinuationData").firstOrNull().s("continuation")
+            ?.takeIf { it.isNotBlank() }
     }
 
     // ---- Renderers ----------------------------------------------------------

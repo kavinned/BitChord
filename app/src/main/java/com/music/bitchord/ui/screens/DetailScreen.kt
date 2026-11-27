@@ -75,6 +75,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.res.stringResource
@@ -233,6 +234,9 @@ private val PILL_SHAPE = RoundedCornerShape(12.dp)
  */
 private const val SEARCH_ITEM_INDEX = 1
 
+/** How close to the tail of a partially loaded list we ask to resume fill-in. */
+private const val RESUME_FILL_IN_LOOKAHEAD = 15
+
 /** The inset the header text and the action pills share. */
 private val HEADER_GUTTER = PAGE_GUTTER + 8.dp
 
@@ -370,6 +374,12 @@ fun DetailScreen(
      * [ArtworkPalette] so it reads as this page rather than a sheet over it.
      */
     reorder: (@Composable (ArtworkPalette) -> Unit)? = null,
+    /**
+     * Asked for when the list is scrolled near its end while the page still has
+     * a continuation: restarts a background load that gave up part way, which
+     * is a no-op while one is running.
+     */
+    onResumeFillIn: () -> Unit = {},
 ) {
     val rawSongs = (page.songs as? UiState.Success)?.data.orEmpty()
     // A folder keeps its own sort — the one its top bar menu sets — rather
@@ -462,6 +472,17 @@ fun DetailScreen(
     // an album's track numbers stay the album's rather than becoming positions
     // in the filtered list.
     val matches = remember(songs, query) { songs.matching(query) }
+    // A load that stopped short leaves a continuation behind; reaching the
+    // tail of what is there asks for it again (#1651).
+    val hasMore = page.continuation != null
+    LaunchedEffect(page.browseId, hasMore, matches.size) {
+        if (!hasMore) return@LaunchedEffect
+        snapshotFlow {
+            val info = listState.layoutInfo
+            info.totalItemsCount > 0 &&
+                (info.visibleItemsInfo.lastOrNull()?.index ?: -1) >= info.totalItemsCount - RESUME_FILL_IN_LOOKAHEAD
+        }.collect { if (it) onResumeFillIn() }
+    }
     // What a tap plays: the filtered set of tracks currently standing in the
     // list. When no filter is active, matches contains the full running order
     // and plays the complete release/playlist from the tapped position.

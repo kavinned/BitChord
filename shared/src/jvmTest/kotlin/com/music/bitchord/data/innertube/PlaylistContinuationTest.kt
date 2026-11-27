@@ -37,4 +37,54 @@ class PlaylistContinuationTest {
         assertEquals(listOf("SET1", "SET2"), page.songs.map { it.setVideoId })
         assertEquals("PAGE3", page.continuation)
     }
+
+    @Test
+    fun `multiple appendContinuationItemsAction blocks are all aggregated`() {
+        val multiAction = Json.parseToJsonElement(
+            """
+            { "onResponseReceivedActions": [
+              { "appendContinuationItemsAction": { "continuationItems": [
+                ${row("aaaaaaaaaaa", "SET1")}
+              ] } },
+              { "appendContinuationItemsAction": { "continuationItems": [
+                ${row("bbbbbbbbbbb", "SET2")},
+                { "continuationItemRenderer": { "continuationEndpoint": { "continuationCommand": { "token": "PAGE_NEXT" } } } }
+              ] } }
+            ] }
+            """,
+        )
+        val page = assertNotNull(InnertubeParser.parsePlaylistShelf(multiAction))
+        assertEquals(listOf("SET1", "SET2"), page.songs.map { it.setVideoId })
+        assertEquals("PAGE_NEXT", page.continuation)
+    }
+
+    @Test
+    fun `duplicate videoId entries with distinct setVideoId are preserved`() {
+        val dupPage = Json.parseToJsonElement(
+            """
+            { "onResponseReceivedActions": [ { "appendContinuationItemsAction": { "continuationItems": [
+              ${row("samevideo01", "SET1")},
+              ${row("samevideo01", "SET2")}
+            ] } } ] }
+            """,
+        )
+        val page = assertNotNull(InnertubeParser.parsePlaylistShelf(dupPage))
+        assertEquals(listOf("SET1", "SET2"), page.songs.map { it.setVideoId })
+        assertEquals(listOf("samevideo01", "samevideo01"), page.songs.map { it.videoId })
+    }
+
+    @Test
+    fun `trailing continuationItemRenderer wins over an earlier one in playlist scope`() {
+        val twoTokens = Json.parseToJsonElement(
+            """
+            { "onResponseReceivedActions": [ { "appendContinuationItemsAction": { "continuationItems": [
+              { "continuationItemRenderer": { "continuationEndpoint": { "continuationCommand": { "token": "STALE_HEAD" } } } },
+              ${row("aaaaaaaaaaa", "SET1")},
+              { "continuationItemRenderer": { "continuationEndpoint": { "continuationCommand": { "token": "TAIL_NEXT" } } } }
+            ] } } ] }
+            """,
+        )
+        val page = assertNotNull(InnertubeParser.parsePlaylistShelf(twoTokens))
+        assertEquals("TAIL_NEXT", page.continuation)
+    }
 }

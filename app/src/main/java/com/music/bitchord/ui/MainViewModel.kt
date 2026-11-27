@@ -3367,6 +3367,7 @@ class MainViewModel(
             // making a ready first screen feel as if it were still loading.
             delay(150)
             var next: String? = token
+            var emptyPages = 0
             while (next != null) {
                 val token = next
                 // One dropped request used to end the walk for good, leaving a
@@ -3409,17 +3410,39 @@ class MainViewModel(
                         continuation = fetched.continuation,
                     )
                 }
-                // A page with nothing new for any copy means the feed has looped
-                // back rather than run dry with a token still attached.
-                if (!progressed) return@launch
-                _detailStack.value = updated
+                // A page with nothing new for any copy usually means the feed has
+                // looped back rather than run dry with a token still attached —
+                // but YouTube also sends a thin page now and then with a fresh
+                // token behind it, so a couple of those are ridden out (#1651).
+                if (!progressed) {
+                    if (!shouldAdvanceEmptyPage(token, fetched.continuation, ++emptyPages, FILL_IN_MAX_EMPTY_PAGES)) {
+                        return@launch
+                    }
+                } else {
+                    emptyPages = 0
+                    _detailStack.value = updated
+                }
                 next = fetched.continuation
+                // Back-to-back requests are what gets a long walk rate-limited.
+                if (next != null) delay(FILL_IN_PAGE_DELAY_MS)
             }
         }.also { job ->
             job.invokeOnCompletion {
                 if (fillInJobs[browseId] === job) fillInJobs.remove(browseId)
             }
         }
+    }
+
+    /**
+     * Restarts a page's walk from the token it stopped at, once a failed or
+     * give-up walk has left it short. No-op while a walk is still running or
+     * the page has nothing left to load.
+     */
+    fun resumeFillIn(browseId: String) {
+        if (fillInJobs[browseId]?.isActive == true) return
+        val page = _detailStack.value.lastOrNull { it.browseId == browseId } ?: return
+        val token = page.continuation ?: return
+        fillIn(browseId, token, page.thumbnailUrl)
     }
 
     /**
@@ -3911,6 +3934,20 @@ class MainViewModel(
 
 /** Waits before each retry of a page's fill-in, as the service's own loader waits. */
 private val FILL_IN_RETRIES_MS = longArrayOf(2_000L, 5_000L, 15_000L)
+private const val FILL_IN_PAGE_DELAY_MS = 250L
+private const val FILL_IN_MAX_EMPTY_PAGES = 2
+
+/**
+ * Whether a fill-in walk should step past a page that added nothing: only onto
+ * a new token (a self-loop is the feed repeating itself), and only for
+ * [maxEmptyPages] such pages in a row.
+ */
+internal fun shouldAdvanceEmptyPage(
+    currentToken: String,
+    nextToken: String?,
+    emptyPages: Int,
+    maxEmptyPages: Int,
+): Boolean = nextToken != null && nextToken != currentToken && emptyPages <= maxEmptyPages
 
 /** [attempt], then again after each of [waitsMs] while it answers null; null if it never answers. */
 internal suspend fun <T : Any> retryingOrNull(waitsMs: LongArray, attempt: suspend () -> T?): T? {
