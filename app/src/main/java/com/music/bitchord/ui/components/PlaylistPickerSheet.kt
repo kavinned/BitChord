@@ -189,7 +189,7 @@ fun PlaylistPickerSheet(
                     leadingDescription = stringResource(R.string.close),
                     onLeading = { closeAfter {} },
                     confirmDescription = if (onConfirmSelection != null) {
-                        stringResource(R.string.playlists_updated)
+                        stringResource(R.string.save)
                     } else if (selected.isEmpty()) {
                         stringResource(R.string.add_to_playlist)
                     } else {

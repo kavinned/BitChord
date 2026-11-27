@@ -1648,6 +1648,10 @@ private fun BitChordApp(
         )
         playFrom(songs, index, source)
     }
+    ResolveActivePlaylistOwnershipEffect(
+        song = player.song,
+        resolveOwnership = viewModel::resolvePlaylistOwnership,
+    )
     LaunchedEffect(player.song?.videoId) {
         if (optimisticVersionSong?.videoId == player.song?.videoId ||
             (optimisticVersionSong != null && player.song?.videoId != convertedAudioId && player.song?.videoId != convertedVideoId && player.song?.videoId != keepVideoId)
@@ -5394,70 +5398,15 @@ private fun BitChordApp(
         // that is a file on this device. Nothing here waits on a network, so
         // there is no loading state and the outcome is known on the tap.
         if (offlinePlaylistTarget != null || creatingOfflinePlaylist) {
-            val target = offlinePlaylistTarget
-            val dismiss = {
-                offlinePlaylistTarget = null
-                creatingOfflinePlaylist = false
-            }
-            val choices = remember(offlinePlaylists) {
-                offlinePlaylists.map { playlist ->
-                    UserPlaylist(
-                        playlistId = playlist.id,
-                        title = playlist.title,
-                        subtitle = context.resources.getQuantityString(
-                            R.plurals.song_count_plural,
-                            playlist.songs.size,
-                            playlist.songs.size,
-                        ),
-                        thumbnailUrl = playlist.songs.firstNotNullOfOrNull { it.thumbnailUrl }
-                            .takeUnless { playlist.isLiked },
-                    )
-                }
-            }
-            // Device playlists are in memory, so membership is known now: the
-            // ones already holding the track open ticked, and unticking removes.
-            val heldBy = remember(offlinePlaylists, target) {
-                val key = target?.localUri
-                if (key == null) emptySet() else offlinePlaylists
-                    .filter { playlist -> playlist.songs.any { it.localUri == key } }
-                    .mapTo(HashSet()) { it.id }
-            }
-            PlaylistPickerSheet(
-                playlists = choices,
-                loading = false,
-                song = target,
-                startCreating = target == null,
-                offline = true,
-                onDismiss = dismiss,
-                initialSelectedIds = heldBy,
-                onConfirmSelection = target?.let { song ->
-                    { added, removed ->
-                        if (added.isNotEmpty()) {
-                            OfflinePlaylists.add(added.mapTo(HashSet()) { it.playlistId }, listOf(song))
-                        }
-                        removed.forEach { OfflinePlaylists.remove(it.playlistId, song) }
-                        showQueueNotice(context.getString(R.string.playlists_updated))
-                    }
+            OfflinePlaylistPickerSheetHost(
+                target = offlinePlaylistTarget,
+                offlinePlaylists = offlinePlaylists,
+                context = context,
+                onDismiss = {
+                    offlinePlaylistTarget = null
+                    creatingOfflinePlaylist = false
                 },
-                onAdd = { picked ->
-                    target?.let { song ->
-                        val result = OfflinePlaylists.add(picked.mapTo(HashSet()) { it.playlistId }, listOf(song))
-                        showQueueNotice(
-                            when {
-                                result.added > 1 -> context.resources.getQuantityString(
-                                    R.plurals.added_to_playlists_notice, result.added, result.added,
-                                )
-                                result.added == 1 -> context.getString(R.string.song_added_to_playlist)
-                                result.alreadyThere > 0 -> context.getString(R.string.song_already_in_playlist)
-                                else -> context.getString(R.string.failed)
-                            },
-                        )
-                    }
-                },
-                onCreate = { title, _ ->
-                    OfflinePlaylists.create(title, listOfNotNull(target))
-                    if (target != null) showQueueNotice(context.getString(R.string.song_added_to_playlist))
-                },
+                showQueueNotice = { showQueueNotice(it) },
             )
         }
 
@@ -6851,3 +6800,87 @@ private suspend fun LazyListState.scrollToTopEased() {
 
 /** Safely converts a nullable Float to non-null, defaulting to 0f for null. */
 private fun Float?.orZero(): Float = this ?: 0f
+
+@Composable
+private fun ResolveActivePlaylistOwnershipEffect(
+    song: Song?,
+    resolveOwnership: (String) -> Unit,
+) {
+    LaunchedEffect(song?.playbackSourceId, song?.fromAutoplay) {
+        val current = song ?: return@LaunchedEffect
+        val sourceId = current.playbackSourceId
+        if (!current.fromAutoplay && sourceId?.startsWith("VL") == true) {
+            resolveOwnership(sourceId)
+        }
+    }
+}
+
+@Composable
+private fun OfflinePlaylistPickerSheetHost(
+    target: Song?,
+    offlinePlaylists: List<com.music.bitchord.data.OfflinePlaylist>,
+    context: Context,
+    onDismiss: () -> Unit,
+    showQueueNotice: (String) -> Unit,
+) {
+    val choices = remember(offlinePlaylists) {
+        offlinePlaylists.map { playlist ->
+            UserPlaylist(
+                playlistId = playlist.id,
+                title = playlist.title,
+                subtitle = context.resources.getQuantityString(
+                    R.plurals.song_count_plural,
+                    playlist.songs.size,
+                    playlist.songs.size,
+                ),
+                thumbnailUrl = playlist.songs.firstNotNullOfOrNull { it.thumbnailUrl }
+                    .takeUnless { playlist.isLiked },
+            )
+        }
+    }
+    // Device playlists are in memory, so membership is known now: the
+    // ones already holding the track open ticked, and unticking removes.
+    val heldBy = remember(offlinePlaylists, target) {
+        val key = target?.localUri
+        if (key == null) emptySet() else offlinePlaylists
+            .filter { playlist -> playlist.songs.any { it.localUri == key } }
+            .mapTo(HashSet()) { it.id }
+    }
+    PlaylistPickerSheet(
+        playlists = choices,
+        loading = false,
+        song = target,
+        startCreating = target == null,
+        offline = true,
+        onDismiss = onDismiss,
+        initialSelectedIds = heldBy,
+        onConfirmSelection = target?.let { song ->
+            { added, removed ->
+                if (added.isNotEmpty()) {
+                    OfflinePlaylists.add(added.mapTo(HashSet()) { it.playlistId }, listOf(song))
+                }
+                removed.forEach { OfflinePlaylists.remove(it.playlistId, song) }
+                showQueueNotice(context.getString(R.string.playlists_updated))
+            }
+        },
+        onAdd = { picked ->
+            target?.let { song ->
+                val result = OfflinePlaylists.add(picked.mapTo(HashSet()) { it.playlistId }, listOf(song))
+                showQueueNotice(
+                    when {
+                        result.added > 1 -> context.resources.getQuantityString(
+                            R.plurals.added_to_playlists_notice, result.added, result.added,
+                        )
+                        result.added == 1 -> context.getString(R.string.song_added_to_playlist)
+                        result.alreadyThere > 0 -> context.getString(R.string.song_already_in_playlist)
+                        else -> context.getString(R.string.failed)
+                    },
+                )
+            }
+        },
+        onCreate = { title, _ ->
+            OfflinePlaylists.create(title, listOfNotNull(target))
+            if (target != null) showQueueNotice(context.getString(R.string.song_added_to_playlist))
+        },
+    )
+}
