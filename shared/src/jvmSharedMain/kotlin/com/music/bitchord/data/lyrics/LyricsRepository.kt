@@ -7,6 +7,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.withTimeoutOrNull
+import java.io.File
 import java.util.Collections
 import java.util.concurrent.ConcurrentHashMap
 
@@ -70,6 +71,19 @@ object LyricsRepository {
     data class Result(val source: LyricsSource, val lines: List<LyricLine>)
 
     /**
+     * Where lookups are kept between runs; see [LyricsCache]. Null keeps them
+     * in memory only.
+     */
+    var cacheDir: File?
+        get() = LyricsCache.cacheDir
+        set(value) {
+            LyricsCache.cacheDir = value
+        }
+
+    /** Forgets every cached lookup, in memory and on disk. */
+    suspend fun clearCache() = LyricsCache.clear()
+
+    /**
      * [sources] is the user's pick from Settings; anything not in it is not
      * contacted at all. An empty set means no lyrics, which is the same answer
      * as switching the feature off. [order] is tried first-to-last; a source
@@ -83,6 +97,10 @@ object LyricsRepository {
      * was supposed to mean. On, a merely line-synced answer is kept only as a
      * fallback, and the search keeps going through the rest of [order] for a
      * word-synced one, taking the top-priority source that has one.
+     *
+     * An earlier answer for [videoId] is served from [LyricsCache] without
+     * touching the network, unless [forceRefresh]. If every source misses —
+     * offline, say — whatever is cached for the video is returned instead.
      */
     suspend fun lyrics(
         videoId: String,
@@ -94,6 +112,8 @@ object LyricsRepository {
         order: List<LyricsSource> = LyricsSource.entries,
         prioritizeSyllableSync: Boolean = false,
         isrc: String? = null,
+        /** Skips the cache read, for an explicit manual refresh. A fresh answer is still cached. */
+        forceRefresh: Boolean = false,
         /** Called from the provider job itself, including for lazily-started providers. */
         onSourceStarted: ((LyricsSource) -> Unit)? = null,
         /**
@@ -107,6 +127,14 @@ object LyricsRepository {
         val sequence = (order + LyricsSource.offered)
             .distinct()
             .filter { it in sources && !it.hidden }
+
+        if (!forceRefresh) {
+            LyricsCache.get(videoId, sources, order, prioritizeSyllableSync)?.let { cached ->
+                onSourceStarted?.invoke(cached.source)
+                onSourceResult?.invoke(cached.source, cached)
+                return@coroutineScope cached
+            }
+        }
 
         // Every source but [SimpMusicLyrics] is asked for a name, and
         // YouTube's is not the name anyone catalogued. Cleaned once, here,
@@ -160,13 +188,20 @@ object LyricsRepository {
             }
         }
 
-        try {
+        val picked = try {
             pick(racing.map { (source, job) -> source to suspend { job.await() } }, prioritizeSyllableSync)
         } finally {
             // Whoever lost the race is no longer worth waiting on, and
             // coroutineScope will not return while they are still running.
             racing.forEach { it.second.cancel() }
             documents.cancel()
+        }
+        when {
+            picked != null -> picked.also { LyricsCache.put(videoId, it) }
+            // Nothing answered. With no source enabled that is the user's
+            // choice, not an outage, so the cache must not override it.
+            sequence.isNotEmpty() -> LyricsCache.getAny(videoId)
+            else -> null
         }
     }
 
